@@ -22,7 +22,7 @@ apt autoremove -y
 snap install --classic code
 snap install thonny
 
-# 3. Create Maintenance Scripts using Heredocs (Safer than variables)
+# 3. Create Maintenance Scripts using Heredocs
 
 # --- Script A: Clear Accounts (Manual Audit Tool) ---
 mkdir -p /home/secsuperuser/scripts
@@ -53,7 +53,7 @@ for dir in /home/*; do
     continue
   fi
 
-  # Extract date using awk (Safe inside Heredoc)
+  # Extract date using awk
   collapsed=$(echo "$line" | tr -s " ")
   date_str=$(echo "$collapsed" | awk '{ for(i=5;i<=9;i++) printf "%s%s", $i, (i<9?" ":""); }')
 
@@ -72,44 +72,60 @@ done
 EOF
 chmod +x /home/secsuperuser/scripts/clearaccounts.sh
 
-# --- Script B: Clear Student on Logout (PAM) ---
-cat << 'EOF' > /usr/local/bin/clearstudent.sh
+# --- Script B: Logout Cleanup (Chrome Locks + Student Wipe) ---
+# This runs automatically when ANY user logs out via PAM
+cat << 'EOF' > /usr/local/bin/logout_cleanup.sh
 #!/bin/bash
+
+# 1. GLOBAL FIX: Remove Chrome Locks for ALL users
+# This prevents "Profile in use" errors if the previous session crashed or wasn't cleared
+CHROME_DIR="/home/$PAM_USER/.config/google-chrome"
+if [ -d "$CHROME_DIR" ]; then
+    rm -f "$CHROME_DIR/SingletonLock"
+    rm -f "$CHROME_DIR/SingletonSocket"
+    rm -f "$CHROME_DIR/SingletonCookie"
+    # Also clean standard "Default" profile locks just in case
+    rm -f "$CHROME_DIR/Default/Preferences"  # Optional: sometimes corrupts
+    logger "PAM_EXEC: Cleared Chrome locks for $PAM_USER"
+fi
+
+# 2. TARGET SPECIFIC: Wipe student@SEC.local completely
 TARGET_USER="student@SEC.local"
 if [ "$PAM_USER" = "$TARGET_USER" ]; then
     if [ -d "/home/$TARGET_USER" ]; then
         # Kill processes first to unlock files
         pkill -u "$TARGET_USER" || true
+        # Wait a split second for handles to release
+        sleep 1
         rm -rf "/home/$TARGET_USER"
         logger "PAM_EXEC: Wiped home for $TARGET_USER"
     fi
 fi
 EOF
-chmod +x /usr/local/bin/clearstudent.sh
+chmod +x /usr/local/bin/logout_cleanup.sh
 
 # Safely add to PAM (Check if it exists first to prevent duplicates)
-if ! grep -q "clearstudent.sh" /etc/pam.d/common-session; then
-    echo "session optional pam_exec.so type=close_session /usr/local/bin/clearstudent.sh" >> /etc/pam.d/common-session
+# We use common-session to ensure it triggers on GUI and SSH logouts
+if ! grep -q "logout_cleanup.sh" /etc/pam.d/common-session; then
+    echo "session optional pam_exec.so type=close_session /usr/local/bin/logout_cleanup.sh" >> /etc/pam.d/common-session
     echo ">>> PAM module added."
 else
     echo ">>> PAM module already exists. Skipping."
 fi
 
 # 4. Configure Crontab
-# Note: We include standard PATH variables to ensure cron works correctly
+# Note: Removed the specific @reboot chrome loops as the PAM script above now handles it.
 cat << 'EOF' > /etc/crontab
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # m h dom mon dow user  command
 @reboot root apt update && apt upgrade -y && apt autoremove -y
-@reboot root /bin/bash -c 'for user in /home/*; do [ -d "$user" ] && rm -rf "$user/.config/google-chrome/Singleton*"; done'
 15 16 * * * root shutdown -h now
 02 16 * * * root apt update && apt upgrade -y && apt autoremove -y
-10 16 * * * root /bin/bash -c 'for user in /home/*; do [ -d "$user" ] && rm -rf "$user/.config/google-chrome/Singleton*"; done'
 EOF
 
-# 5. Systemd: Wipe Student on Boot
+# 5. Systemd: Wipe Student on Boot (Failsafe)
 cat << 'EOF' > /etc/systemd/system/cleanup-student.service
 [Unit]
 Description=Wipe Student AD Profile on Boot
