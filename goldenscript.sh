@@ -85,7 +85,7 @@ if [ -d "$CHROME_DIR" ]; then
     rm -f "$CHROME_DIR/SingletonSocket"
     rm -f "$CHROME_DIR/SingletonCookie"
     # Also clean standard "Default" profile locks just in case
-    rm -f "$CHROME_DIR/Default/Preferences"  # Optional: sometimes corrupts
+    rm -f "$CHROME_DIR/Default/Preferences" 
     logger "PAM_EXEC: Cleared Chrome locks for $PAM_USER"
 fi
 
@@ -105,7 +105,6 @@ EOF
 chmod +x /usr/local/bin/logout_cleanup.sh
 
 # Safely add to PAM (Check if it exists first to prevent duplicates)
-# We use common-session to ensure it triggers on GUI and SSH logouts
 if ! grep -q "logout_cleanup.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so type=close_session /usr/local/bin/logout_cleanup.sh" >> /etc/pam.d/common-session
     echo ">>> PAM module added."
@@ -114,7 +113,6 @@ else
 fi
 
 # 4. Configure Crontab
-# Note: Removed the specific @reboot chrome loops as the PAM script above now handles it.
 cat << 'EOF' > /etc/crontab
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
@@ -298,7 +296,6 @@ APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
     if [ -f "$FILE" ]; then
-        # Append only if NoDisplay isn't already set
         if ! grep -q "NoDisplay=true" "$FILE"; then
             echo "NoDisplay=true" >> "$FILE"
         fi
@@ -314,5 +311,25 @@ if ! [ -f "$RULES_FILE" ]; then
   echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "$RULES_FILE"
 fi
 udevadm control --reload
+
+# 9. File Associations (Default Apps)
+echo ">>> Setting File Associations..."
+MIME_LIST="/usr/share/applications/mimeapps.list"
+
+# Ensure the file has the standard header
+if [ -f "$MIME_LIST" ]; then
+    if ! grep -q "\[Default Applications\]" "$MIME_LIST"; then
+        echo "[Default Applications]" >> "$MIME_LIST"
+    fi
+    
+    # Remove any existing CSV/TXT associations to prevent conflicts
+    sed -i '/text\/csv/d' "$MIME_LIST"
+    sed -i '/text\/plain/d' "$MIME_LIST"
+
+    # Inject VS Code (code_code.desktop) as the default
+    # We append right after the [Default Applications] header
+    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME_LIST"
+    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME_LIST"
+fi
 
 echo ">>> Setup Complete! Reboot recommended."
