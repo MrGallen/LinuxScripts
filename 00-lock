@@ -1,0 +1,38 @@
+# [org/gnome/settings-daemon/plugins/power]
+/org/gnome/settings-daemon/plugins/power/ambient-enabled
+/org/gnome/settings-daemon/plugins/power/idle-brightness
+/org/gnome/settings-daemon/plugins/power/idle-dim
+/org/gnome/settings-daemon/plugins/power/lid-close-ac-action
+/org/gnome/settings-daemon/plugins/power/lid-close-battery-action
+/org/gnome/settings-daemon/plugins/power/lid-close-suspend-with-external-monitor
+/org/gnome/settings-daemon/plugins/power/power-button-action
+/org/gnome/settings-daemon/plugins/power/power-saver-profile-on-low-battery
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-timeout
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-timeout
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type
+
+# [org/gnome/desktop/screensaver]
+/org/gnome/desktop/screensaver/idle-activation-enabled
+/org/gnome/desktop/screensaver/lock-delay
+/org/gnome/desktop/screensaver/lock-enabled
+
+# [org/gnome/desktop/session]
+/org/gnome/desktop/session/idle-delay
+
+# [org/gnome/desktop/interface]
+/org/gnome/desktop/interface/clock-show-weekday
+/org/gnome/desktop/interface/show-battery-percentage
+
+# [org/gnome/desktop/input-sources]
+/org/gnome/desktop/input-sources/sources
+
+# [org/gnome/shell/extensions/dash-to-dock]
+#/org/gnome/shell/extensions/dash-to-dock/autohide
+#/org/gnome/shell/extensions/dash-to-dock/dock-fixed
+#/org/gnome/shell/extensions/dash-to-dock/extend-height
+#/org/gnome/shell/extensions/dash-to-dock/dash-max-icon-size
+#/org/gnome/shell/extensions/dash-to-dock/dock-position
+
+# [org/gnome/shell/extensions/ding]
+/org/gnome/shell/extensions/ding/show-home

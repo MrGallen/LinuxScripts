@@ -1,0 +1,7 @@
+
+# custom scripts
+@reboot root /home/secsuperuser/scripts/clearaccount.sh "student@SEC.local"
+@reboot root /home/secsuperuser/scripts/clearaccounts.sh
+@reboot apt update && apt upgrade -y && apt autoremove -y
+@reboot /bin/bash -c 'for user in /home/*; do /bin/rm -rf "$user/.config/google-chrome/Singleton*"; done'
+15 16 * * * root shutdown -h now
