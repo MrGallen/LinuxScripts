@@ -215,6 +215,7 @@ echo "system-db:custom" >> "$PROFILE_FILE"
 
 mkdir -p /etc/dconf/db/custom.d/locks
 
+# FIX 1: Updated Thonny name to match Snap version (thonny_thonny.desktop)
 cat << 'EOF' > /etc/dconf/db/custom.d/00-config
 [org/gnome/settings-daemon/plugins/power]
 ambient-enabled=false
@@ -259,9 +260,10 @@ dock-position="BOTTOM"
 show-home=false
 
 [org/gnome/shell]
-favorite-apps=["google-chrome.desktop", "firefox_firefox.desktop", "libreoffice-writer.desktop", "libreoffice-calc.desktop", "org.gnome.Nautilus.desktop", "org.gnome.Terminal.desktop", "code_code.desktop", "org.thonny.Thonny.desktop"]
+favorite-apps=["google-chrome.desktop", "firefox_firefox.desktop", "libreoffice-writer.desktop", "libreoffice-calc.desktop", "org.gnome.Nautilus.desktop", "org.gnome.Terminal.desktop", "code_code.desktop", "thonny_thonny.desktop"]
 EOF
 
+# FIX 2: Added /org/gnome/shell/favorite-apps to the LOCK file
 cat << 'EOF' > /etc/dconf/db/custom.d/locks/00-lock
 /org/gnome/settings-daemon/plugins/power/ambient-enabled
 /org/gnome/settings-daemon/plugins/power/idle-brightness
@@ -283,6 +285,7 @@ cat << 'EOF' > /etc/dconf/db/custom.d/locks/00-lock
 /org/gnome/desktop/interface/show-battery-percentage
 /org/gnome/desktop/input-sources/sources
 /org/gnome/shell/extensions/ding/show-home
+/org/gnome/shell/favorite-apps
 EOF
 
 # CRITICAL: Update dconf database
