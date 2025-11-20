@@ -1,30 +1,33 @@
 #!/bin/bash
+set -e  # Stop the script immediately if any command fails
 
-# check if the script is running as root
+# 1. Root Check
 if [ "$(id -u)" -ne 0 ]; then
-  echo "this script must be running as root - exiting"
+  echo "This script must be running as root. Exiting."
   exit 1
 fi
 
-# update repository and upgrade packages
+echo ">>> Starting System Setup..."
+
+# 2. Updates & Package Management
+echo ">>> Updating system..."
 apt update && apt upgrade -y
 
-# uninstall packages
-apt purge code -y
-apt purge thonny -y
+echo ">>> Managing packages..."
+# Remove deb versions
+apt purge code thonny zenity gnome-initial-setup -y
+apt autoremove -y
 
-# install packages
+# Install snap versions
 snap install --classic code
 snap install thonny
 
-# uninstall gnome-initial-setup
-apt remove --autoremove gnome-initial-setup -y
+# 3. Create Maintenance Scripts using Heredocs (Safer than variables)
 
-# uninstall zenity to fix file saving
-apt purge zenity -y
-
-# initialise maintenance scripts
-CLEARACCOUNTS_SCRIPT='#!/bin/bash
+# --- Script A: Clear Accounts (Manual Audit Tool) ---
+mkdir -p /home/secsuperuser/scripts
+cat << 'EOF' > /home/secsuperuser/scripts/clearaccounts.sh
+#!/bin/bash
 set -euo pipefail
 
 LOG_FILE="/var/log/clearaccounts.log"
@@ -32,181 +35,174 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 DAYS_LIMIT=120
 SECONDS_LIMIT=$(( DAYS_LIMIT * 86400 ))
-
 epoch_now=$(date +%s)
 
 for dir in /home/*; do
   [[ -d "$dir" ]] || continue
-
   user="${dir##*/}"
+  
+  # Exclusions
   [[ "$user" == "*" ]] && continue
   [[ "$user" == "secsuperuser" ]] && continue
   [[ "$user" == "egallen@SEC.local" ]] && continue
 
   line=$(last -F -- "$user" 2>/dev/null | grep "login screen" | head -n1 || true)
+  
   if [[ -z "$line" ]]; then
-    timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-    echo "$timestamp ERROR: no login screen record found for $user" >> "$LOG_FILE"
+    echo "$(date) ERROR: no login screen record found for $user" >> "$LOG_FILE"
     continue
   fi
 
+  # Extract date using awk (Safe inside Heredoc)
   collapsed=$(echo "$line" | tr -s " ")
-  date=$(echo "$collapsed" | awk '\''{ for(i=5;i<=9;i++) printf "%s%s", $i, (i<9?" ":""); }'\'')
-  if [[ -z "$date" ]]; then
-    timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-    echo "$timestamp ERROR: could not extract timestamp from $line" >> "$LOG_FILE"
-    continue
-  fi
+  date_str=$(echo "$collapsed" | awk '{ for(i=5;i<=9;i++) printf "%s%s", $i, (i<9?" ":""); }')
 
-  if ! epoch_last=$(date -d "$date" +%s 2>/dev/null); then
-    timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-    echo "$timestamp ERROR: failed to parse date $date for $user" >> "$LOG_FILE"
+  if ! epoch_last=$(date -d "$date_str" +%s 2>/dev/null); then
+    echo "$(date) ERROR: failed to parse date $date_str for $user" >> "$LOG_FILE"
     continue
   fi
 
   seconds_passed=$(( epoch_now - epoch_last ))
 
-  timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-  echo "$timestamp INFO: user=$user seconds_passed=$seconds_passed days_passed=$(( seconds_passed / 86400 ))" >> "$LOG_FILE"
-
   if (( seconds_passed > SECONDS_LIMIT )); then
-    timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-    echo "$timestamp INFO: $user has not logged in $DAYS_LIMIT days" >> "$LOG_FILE"
     rm -fr "$dir"
-    timestamp="$(date +"%d-%m-%Y %H:%M:%S")"
-    echo "$timestamp INFO: $user home directory has been cleared" >> "$LOG_FILE"
+    echo "$(date) INFO: $user home directory cleared (Inactive > $DAYS_LIMIT days)" >> "$LOG_FILE"
   fi
-done'
-
-CLEARSTUDENT_SCRIPT='TARGET_USER="student@SEC.local"
-if [ "$PAM_USER" = "$TARGET_USER" ]; then
-    if [ -d "/home/$TARGET_USER" ]; then
-        pkill -u "$TARGET_USER"
-        rm -rf "/home/$TARGET_USER"
-    fi
-fi'
-
-CRON_TEMPLATE='
-# custom scripts
-@reboot apt update && apt upgrade -y && apt autoremove -y
-@reboot /bin/bash -c '\''for user in /home/*; do /bin/rm -rf "$user/.config/google-chrome/Singleton*"; done'\''
-15 16 * * * root shutdown -h now
-02 16 * * * apt update && apt upgrade -y && apt autoremove -y
-10 16 * * *  /bin/bash -c '\''for user in /home/*; do /bin/rm -rf "$user/.config/google-chrome/Singleton*"; done'\'''
-
-
-mkdir /home/secsuperuser/scripts
-
-echo "$CLEARACCOUNTS_SCRIPT" > /home/secsuperuser/scripts/clearaccounts.sh
+done
+EOF
 chmod +x /home/secsuperuser/scripts/clearaccounts.sh
 
-echo "$CLEARSTUDENT_SCRIPT" > /usr/local/bin/clearstudent.sh
-echo "session optional pam_exec.so type=close_session /usr/local/bin/clearstudent.sh" >> /etc/pam.d/common-session
+# --- Script B: Clear Student on Logout (PAM) ---
+cat << 'EOF' > /usr/local/bin/clearstudent.sh
+#!/bin/bash
+TARGET_USER="student@SEC.local"
+if [ "$PAM_USER" = "$TARGET_USER" ]; then
+    if [ -d "/home/$TARGET_USER" ]; then
+        # Kill processes first to unlock files
+        pkill -u "$TARGET_USER" || true
+        rm -rf "/home/$TARGET_USER"
+        logger "PAM_EXEC: Wiped home for $TARGET_USER"
+    fi
+fi
+EOF
 chmod +x /usr/local/bin/clearstudent.sh
 
-echo "$CRON_TEMPLATE" > /etc/crontab
+# Safely add to PAM (Check if it exists first to prevent duplicates)
+if ! grep -q "clearstudent.sh" /etc/pam.d/common-session; then
+    echo "session optional pam_exec.so type=close_session /usr/local/bin/clearstudent.sh" >> /etc/pam.d/common-session
+    echo ">>> PAM module added."
+else
+    echo ">>> PAM module already exists. Skipping."
+fi
 
-# create systemd unit to wipe student profile at boot
-SERVICE_UNIT='[Unit]
+# 4. Configure Crontab
+# Note: We include standard PATH variables to ensure cron works correctly
+cat << 'EOF' > /etc/crontab
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# m h dom mon dow user  command
+@reboot root apt update && apt upgrade -y && apt autoremove -y
+@reboot root /bin/bash -c 'for user in /home/*; do [ -d "$user" ] && rm -rf "$user/.config/google-chrome/Singleton*"; done'
+15 16 * * * root shutdown -h now
+02 16 * * * root apt update && apt upgrade -y && apt autoremove -y
+10 16 * * * root /bin/bash -c 'for user in /home/*; do [ -d "$user" ] && rm -rf "$user/.config/google-chrome/Singleton*"; done'
+EOF
+
+# 5. Systemd: Wipe Student on Boot
+cat << 'EOF' > /etc/systemd/system/cleanup-student.service
+[Unit]
 Description=Wipe Student AD Profile on Boot
-# Wait for network and SSSD to be ready
 After=network-online.target sssd.service systemd-user-sessions.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=root
-# Remove student home if present
-ExecStart=/bin/bash -c '\''if [ -d "/home/student@SEC.local" ]; then rm -rf "/home/student@SEC.local"; fi'\''
+ExecStart=/bin/bash -c 'if [ -d "/home/student@SEC.local" ]; then rm -rf "/home/student@SEC.local"; fi'
 ExecStartPost=/usr/bin/logger "Systemd Cleanup: Wiped /home/student@SEC.local"
 
 [Install]
 WantedBy=multi-user.target
-'
-
-echo "$SERVICE_UNIT" > /etc/systemd/system/cleanup-student.service
+EOF
 chmod 644 /etc/systemd/system/cleanup-student.service
 
-# reload systemd, enable and start the service now (runs on this boot and subsequent boots)
-systemctl daemon-reload
-systemctl enable --now cleanup-student.service
+# 6. Systemd: Inactive User Cleanup (Weekly/Monthly)
 
-# add cleanup for inactive domain users (skip egallen@SEC.local)
-CLEANUP_OLD_USERS_SCRIPT='#!/bin/bash
+# The Script
+cat << 'EOF' > /usr/local/bin/cleanup_old_users.sh
+#!/bin/bash
 set -euo pipefail
 
 DAYS=120
 DOMAIN_SUFFIX="@SEC.local"
 SKIP_USER="egallen@SEC.local"
 LOG_FILE="/var/log/cleanup_old_users.log"
+
+# Ensure log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# list accounts with DOMAIN_SUFFIX inactive for > DAYS using lastlog
-# awk extracts username column; skip header and the SKIP_USER
-lastlog -b "$DAYS" | awk -v suf="$DOMAIN_SUFFIX" '\''NR>1 && index($0, suf){print $1}'\'' | while read -r USER_ACCOUNT; do
-    # safety: skip empty and reserved accounts
+# Process users
+lastlog -b "$DAYS" | awk -v suf="$DOMAIN_SUFFIX" 'NR>1 && index($0, suf){print $1}' | while read -r USER_ACCOUNT; do
     [[ -z "$USER_ACCOUNT" ]] && continue
     [[ "$USER_ACCOUNT" == "root" ]] && continue
-    [[ "$USER_ACCOUNT" == "'"$SKIP_USER"'" ]] && continue
+    [[ "$USER_ACCOUNT" == "$SKIP_USER" ]] && continue
 
     HOME_DIR="/home/$USER_ACCOUNT"
     if [ -d "$HOME_DIR" ]; then
-        echo "$(date -u +"%Y-%m-%d %T UTC") INFO: Processing $USER_ACCOUNT (home: $HOME_DIR)" >> "$LOG_FILE"
-
-        # kill any remaining processes and remove home dir
         pkill -u "$USER_ACCOUNT" || true
         rm -rf "$HOME_DIR"
-
-        echo "$(date -u +"%Y-%m-%d %T UTC") INFO: Removed $HOME_DIR for $USER_ACCOUNT" >> "$LOG_FILE"
-        logger "Inactive Cleanup: Wiped profile for $USER_ACCOUNT (Inactive > $DAYS days)"
+        echo "$(date) INFO: Removed $HOME_DIR for $USER_ACCOUNT" >> "$LOG_FILE"
+        logger "Inactive Cleanup: Wiped profile for $USER_ACCOUNT"
     fi
 done
-'
-
-echo "$CLEANUP_OLD_USERS_SCRIPT" > /usr/local/bin/cleanup_old_users.sh
+EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
-chown root:root /usr/local/bin/cleanup_old_users.sh
 
-# create systemd service (one-shot)
-DELETE_INACTIVE_SERVICE='[Unit]
+# The Service
+cat << 'EOF' > /etc/systemd/system/delete-inactive-users.service
+[Unit]
 Description=Cleanup Inactive Student Profiles (>120 Days)
-After=network-online.target sssd.service systemd-user-sessions.service
-Wants=network-online.target
+After=network-online.target sssd.service
 
 [Service]
 Type=oneshot
 User=root
 ExecStart=/usr/local/bin/cleanup_old_users.sh
-'
+EOF
 
-echo "$DELETE_INACTIVE_SERVICE" > /etc/systemd/system/delete-inactive-users.service
-chmod 644 /etc/systemd/system/delete-inactive-users.service
-
-# create a timer to run monthly on the first Wednesday at 01:20
-DELETE_INACTIVE_TIMER='[Unit]
-Description=Monthly cleanup (first Wednesday) of inactive student profiles (>120 Days)
+# The Timer (Monthly: First Wednesday at 13:20)
+cat << 'EOF' > /etc/systemd/system/delete-inactive-users.timer
+[Unit]
+Description=Run Inactive User Cleanup Monthly (First Wed)
 
 [Timer]
-# First Wednesday of every month at 13:20
+# First Wednesday of the month
 OnCalendar=Wed *-*-1..7 13:20:00
 Persistent=true
-# Add a small randomized delay to avoid load spikes if many machines run at once
-RandomizedDelaySec=30m
+RandomizedDelaySec=5m
 
 [Install]
 WantedBy=timers.target
-'
+EOF
 
-echo "$DELETE_INACTIVE_TIMER" > /etc/systemd/system/delete-inactive-users.timer
-chmod 644 /etc/systemd/system/delete-inactive-users.timer
-
-# reload systemd and enable timer
+# Enable Systemd Units
 systemctl daemon-reload
+systemctl enable --now cleanup-student.service
 systemctl enable --now delete-inactive-users.timer
 
+# 7. UI Customization (GNOME dconf)
+echo ">>> Applying GNOME settings..."
 
-# initialise customised ui
-CONFIG='[org/gnome/settings-daemon/plugins/power]
+PROFILE_FILE="/etc/dconf/profile/custom"
+mkdir -p /etc/dconf/profile
+echo "user-db:user" > "$PROFILE_FILE"
+echo "system-db:custom" >> "$PROFILE_FILE"
+
+mkdir -p /etc/dconf/db/custom.d/locks
+
+cat << 'EOF' > /etc/dconf/db/custom.d/00-config
+[org/gnome/settings-daemon/plugins/power]
 ambient-enabled=false
 idle-brightness=30
 idle-dim=false
@@ -246,9 +242,13 @@ dash-max-icon-size=54
 dock-position="BOTTOM"
 
 [org/gnome/shell/extensions/ding]
-show-home=false'
+show-home=false
 
-LOCK='# [org/gnome/settings-daemon/plugins/power]
+[org/gnome/shell]
+favorite-apps=["google-chrome.desktop", "firefox_firefox.desktop", "libreoffice-writer.desktop", "libreoffice-calc.desktop", "org.gnome.Nautilus.desktop", "org.gnome.Terminal.desktop", "code_code.desktop", "org.thonny.Thonny.desktop"]
+EOF
+
+cat << 'EOF' > /etc/dconf/db/custom.d/locks/00-lock
 /org/gnome/settings-daemon/plugins/power/ambient-enabled
 /org/gnome/settings-daemon/plugins/power/idle-brightness
 /org/gnome/settings-daemon/plugins/power/idle-dim
@@ -261,66 +261,42 @@ LOCK='# [org/gnome/settings-daemon/plugins/power]
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-timeout
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type
-
-# [org/gnome/desktop/screensaver]
 /org/gnome/desktop/screensaver/idle-activation-enabled
 /org/gnome/desktop/screensaver/lock-delay
 /org/gnome/desktop/screensaver/lock-enabled
-
-# [org/gnome/desktop/session]
 /org/gnome/desktop/session/idle-delay
-
-# [org/gnome/desktop/interface]
 /org/gnome/desktop/interface/clock-show-weekday
 /org/gnome/desktop/interface/show-battery-percentage
-
-# [org/gnome/desktop/input-sources]
 /org/gnome/desktop/input-sources/sources
+/org/gnome/shell/extensions/ding/show-home
+EOF
 
-# [org/gnome/shell/extensions/dash-to-dock]
-#/org/gnome/shell/extensions/dash-to-dock/autohide
-#/org/gnome/shell/extensions/dash-to-dock/dock-fixed
-#/org/gnome/shell/extensions/dash-to-dock/extend-height
-#/org/gnome/shell/extensions/dash-to-dock/dash-max-icon-size
-#/org/gnome/shell/extensions/dash-to-dock/dock-position
+# CRITICAL: Update dconf database
+dconf update
 
-[org/gnome/shell]
-favorite-apps=["google-chrome.desktop", "firefox_firefox.desktop", "libreoffice-writer.desktop", "libreoffice-calc.desktop", "org.gnome.Nautilus.desktop", "org.gnome.Terminal.desktop", "code_code.desktop", "org.thonny.Thonny.desktop"]
+# 8. Miscellaneous Cleanup
+echo ">>> Performing final cleanup..."
 
-# [org/gnome/shell/extensions/ding]
-/org/gnome/shell/extensions/ding/show-home'
-
-PROFILE_FILE="/etc/dconf/profile/custom"
-mkdir -p /etc/dconf/profile
-echo "user-db:user" > "$PROFILE_FILE"
-echo "system-db:custom" >> "$PROFILE_FILE"
-
-DB_FILE="/etc/dconf/db/custom.d/00-config"
-DB_LOCK_FILE="/etc/dconf/db/custom.d/locks/00-lock"
-sudo mkdir -p /etc/dconf/db/custom.d/locks
-echo "$CONFIG" > "$DB_FILE"
-echo "$LOCK" > "$DB_LOCK_FILE"
-
-# hide apps from start menu
+# Hide Apps
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
-for app in "${APPS[@]}"
-do
-    echo "NoDisplay=true" >> "/usr/share/applications/$app"
+for app in "${APPS[@]}"; do
+    FILE="/usr/share/applications/$app"
+    if [ -f "$FILE" ]; then
+        # Append only if NoDisplay isn't already set
+        if ! grep -q "NoDisplay=true" "$FILE"; then
+            echo "NoDisplay=true" >> "$FILE"
+        fi
+    fi
 done
 
-# delete all chrome shortcuts
+# Delete Chrome Shortcuts
 find /home -type f -iname "chrome-*-Default.desktop" -delete
 
-# microbit serial access
+# Microbit Rules
 RULES_FILE="/etc/udev/rules.d/99-microbit.rules"
-VENDOR_ID="0d28"
-PRODUCT_ID="0204"
-
 if ! [ -f "$RULES_FILE" ]; then
-  echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\"" > "$RULES_FILE"
+  echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "$RULES_FILE"
 fi
-
 udevadm control --reload
 
-# final cleanup
-apt autoremove -y
+echo ">>> Setup Complete! Reboot recommended."
