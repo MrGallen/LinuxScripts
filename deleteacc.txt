@@ -1,0 +1,114 @@
+Here is the complete, end-to-end setup for Ubuntu 24.04. This will create a system that automatically wipes student@sec.local profiles that haven't logged in for 120 days, running every Wednesday at 13:20.
+
+Step 1: Create the Cleanup Script
+This script finds the users and performs the deletion.
+
+Create the file:
+
+Bash
+
+sudo nano /usr/local/bin/cleanup_old_users.sh
+Paste the following code:
+
+Bash
+
+#!/bin/bash
+
+# CONFIGURATION
+DAYS=120
+DOMAIN_SUFFIX="@sec.local" # Strict filter to protect other admins
+
+# 1. Get list of users inactive for >120 days
+# lastlog -b 120 shows users older than 120 days
+# grep filters for only your domain users
+# awk grabs the first column (username)
+lastlog -b $DAYS | grep "$DOMAIN_SUFFIX" | awk '{print $1}' | while read -r USER_ACCOUNT; do
+
+    # Define home path
+    HOME_DIR="/home/$USER_ACCOUNT"
+
+    # 2. Safety Check: Ensure directory exists
+    if [ -d "$HOME_DIR" ]; then
+        echo "Processing $USER_ACCOUNT..."
+
+        # 3. Kill lingering processes for this user
+        pkill -u "$USER_ACCOUNT" || true
+
+        # 4. Wipe the profile directory
+        rm -rf "$HOME_DIR"
+
+        # 5. Log the action to system journals
+        logger "Inactive Cleanup: Wiped profile for $USER_ACCOUNT (Inactive > $DAYS days)"
+    fi
+done
+Make the script executable:
+
+Bash
+
+sudo chmod +x /usr/local/bin/cleanup_old_users.sh
+Step 2: Create the Service Unit
+This tells Systemd how to run the script (as root).
+
+Create the service file:
+
+Bash
+
+sudo nano /etc/systemd/system/delete-inactive-users.service
+Paste this configuration:
+
+Ini, TOML
+
+[Unit]
+Description=Cleanup Inactive Student Profiles (>120 Days)
+# Ensure authentication services are up before we try reading lastlog/users
+After=network-online.target sssd.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/cleanup_old_users.sh
+Step 3: Create the Timer Unit
+This tells Systemd when to run the service (Wednesday 13:20).
+
+Create the timer file:
+
+Bash
+
+sudo nano /etc/systemd/system/delete-inactive-users.timer
+Paste this configuration:
+
+Ini, TOML
+
+[Unit]
+Description=Run Inactive User Cleanup Weekly (Wed 13:20)
+
+[Timer]
+# Schedule: Wednesday at 13:20 (24-hour format)
+OnCalendar=Wed *-*-* 13:20:00
+
+# Persistence: If the machine is OFF on Wed at 13:20, 
+# run the script immediately next time it boots.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+Step 4: Enable and Activate
+You must reload the systemd daemon to see the new files, and then enable the Timer (not the service).
+
+Bash
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now delete-inactive-users.timer
+Step 5: Verify Setup
+Run this command to confirm the schedule is set correctly:
+
+Bash
+
+systemctl list-timers delete-inactive-users.timer
+NEXT: Should show the date of the upcoming Wednesday at 13:20.
+
+LEFT: Shows how much time is left until then.
+
+ACTIVITES: Should be "active (waiting)".
+
+That's it. Your system will now automatically clean up old sec.local profiles every Wednesday afternoon.

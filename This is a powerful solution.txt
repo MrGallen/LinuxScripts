@@ -1,0 +1,163 @@
+This is a powerful solution, but it requires precision. Because PAM runs as root, a mistake in the script could wipe the wrong directory.
+
+Here is the step-by-step implementation to safely wipe the student@sec.local profile upon logout.
+
+1. Create the Cleanup Script
+We need a script that checks who is logging out before it deletes anything. This prevents the script from accidentally wiping an admin profile.
+
+Create the script: sudo nano /usr/local/bin/wipe_student.sh
+
+Paste the following code:
+
+Bash
+
+#!/bin/bash
+
+# 1. Define the specific user to target
+TARGET_USER="student@sec.local"
+
+# 2. Check if the user logging out matches the target
+# PAM passes the username in the variable $PAM_USER
+if [ "$PAM_USER" = "$TARGET_USER" ]; then
+
+    # 3. Double check the directory exists to avoid errors
+    if [ -d "/home/$TARGET_USER" ]; then
+        
+        # Optional: Kill any lingering processes by this user so files aren't locked
+        pkill -u "$TARGET_USER"
+        
+        # 4. Wipe the directory
+        # We remove the folder entirely. pam_mkhomedir usually recreates it on next login.
+        # If you prefer to keep the folder and only empty it, change to: rm -rf /home/$TARGET_USER/*
+        rm -rf "/home/$TARGET_USER"
+        
+        # Log the action (Optional, for troubleshooting)
+        logger "PAM_EXEC: Wiped home directory for $TARGET_USER"
+    fi
+fi
+Make it executable:
+
+Bash
+
+sudo chmod +x /usr/local/bin/wipe_student.sh
+2. Configure PAM
+You need to hook this script into the "Session" phase of the authentication stack.
+
+Important: Do not edit /etc/pam.d/postlogin for logout actions if you can avoid it, as that file is often reserved for startup tasks. The standard place for session management (login/logout) depends on your OS distribution.
+
+For Ubuntu / Debian / Kali
+Edit the common session file: sudo nano /etc/pam.d/common-session
+
+Add this line at the end of the file:
+
+Plaintext
+
+session optional pam_exec.so type=close_session /usr/local/bin/wipe_student.sh
+For RHEL / CentOS / Fedora / Rocky
+Edit the password-auth or system-auth file (usually linked to system-auth): sudo nano /etc/pam.d/postlogin (If you are strictly using this file as per your prompt) OR (Standard practice) sudo nano /etc/pam.d/system-auth
+
+Add this line at the end of the session block:
+
+Plaintext
+
+session optional pam_exec.so type=close_session /usr/local/bin/wipe_student.sh
+3. Critical Requirement: Auto-Recreation
+Since we are deleting the data (and potentially the directory) on logout, the directory must be recreated when the student logs back in.
+
+Ensure you have pam_mkhomedir.so enabled in your PAM configuration (usually near the top of the session stack).
+
+Check: Look for a line similar to: session required pam_mkhomedir.so skel=/etc/skel/ umask=0077
+
+If this line is missing, the user will log in next time, but will not have a home directory, resulting in errors.
+
+Summary of How This Works
+User Logs Out: The user clicks logout or types exit.
+
+PAM Trigger: The PAM stack reaches the close_session phase.
+
+Script Execution: pam_exec runs /usr/local/bin/wipe_student.sh.
+
+Safety Check: The script verifies $PAM_USER is student@sec.local.
+
+Wipe: The script deletes the folder.
+
+Next Login: pam_mkhomedir sees the folder is missing and creates a fresh one from the skeleton directory.
+
+Would you like me to check your current PAM configuration to see if mkhomedir is correctly set up to regenerate the folder?
+
+
+
+
+
+
+
+----
+
+
+
+Here is the full setup to wipe the student@sec.local profile on every boot using a Systemd service.
+
+This is superior to @reboot because it solves the "Race Condition" by waiting for the network and SSSD (Active Directory) services to be ready before it tries to delete anything.
+
+Step 1: Create the Service File
+We will create a unit file that runs once during the boot sequence.
+
+Open the file editor:
+
+Bash
+
+sudo nano /etc/systemd/system/cleanup-student.service
+Paste the following configuration. Note: I have modified the ExecStart command slightly. It is safer to remove the entire directory rather than just the contents. If you leave an empty folder, pam_mkhomedir might think the profile already exists and fail to create the necessary startup files (like .bashrc), resulting in a broken shell for the student.
+
+Ini, TOML
+
+[Unit]
+Description=Wipe Student AD Profile on Boot
+# CRITICAL: Wait for Network and User Identity Services (SSSD)
+# This ensures we don't try to delete a mount that isn't there yet.
+After=network-online.target sssd.service systemd-user-sessions.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+
+# Delete the ENTIRE folder. 
+# When the student logs in, PAM will see the folder is missing 
+# and generate a fresh one from /etc/skel.
+ExecStart=/bin/bash -c 'if [ -d "/home/student@sec.local" ]; then rm -rf /home/student@sec.local; fi'
+
+# Optional: Log to syslog so you can verify it ran
+ExecStartPost=/usr/bin/logger "Systemd Cleanup: Wiped /home/student@sec.local"
+
+[Install]
+WantedBy=multi-user.target
+Step 2: Enable the Service
+Now tell Linux to load this script into the boot sequence.
+
+Bash
+
+# 1. Reload systemd to read the new file
+sudo systemctl daemon-reload
+
+# 2. Enable it to run on every boot
+sudo systemctl enable cleanup-student.service
+Step 3: Verify It Works
+You don't need to reboot the server to test if the code works. You can trigger it manually right now.
+
+Check if the folder exists:
+
+Bash
+
+ls -d /home/student@sec.local
+Manually trigger the service:
+
+Bash
+
+sudo systemctl start cleanup-student.service
+Check if the folder is gone:
+
+Bash
+
+ls -d /home/student@sec.local
+(It should report "No such file or directory")

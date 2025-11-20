@@ -1,0 +1,31 @@
+autoinstall:
+  version: 1
+  identity:
+    realname: "secsuperuser"
+    hostname: ubuntu-dev
+    username: secsuperuser
+    password: "$1$bhpiiVkx$3CqA/6Sq2YnNvgaKxGQnN/"
+  keyboard:
+    layout: gb
+    variant: ''
+  locale: en_GB
+  timezone: Europe/Dublin
+  packages:
+  - thonny
+  - adsys
+  - libreoffice-writer
+  - libreoffice-calc
+  - libreoffice-impress
+  - libreoffice-draw
+  - unattended-upgrades
+  late-commands:
+  - curtin in-target -- apt update
+  - curtin in-target -- apt install -y wget gpg
+  - curtin in-target -- apt update
+  - curtin in-target -- apt install python3-matplotlib -y
+  - curtin in-target -- apt install python3-pandas -y
+  - curtin in-target -- bash -c "wget -O /tmp/custom.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+  - curtin in-target -- dpkg -i /tmp/custom.deb || apt -f install -y
+  #curtin in-target -- apt purge zenity
+  - curtin in-target -- snap install code --classic
+
