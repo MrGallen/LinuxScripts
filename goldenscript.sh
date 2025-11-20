@@ -73,19 +73,16 @@ EOF
 chmod +x /home/secsuperuser/scripts/clearaccounts.sh
 
 # --- Script B: Logout Cleanup (Chrome Locks + Student Wipe) ---
-# This runs automatically when ANY user logs out via PAM
 cat << 'EOF' > /usr/local/bin/logout_cleanup.sh
 #!/bin/bash
 
 # 1. GLOBAL FIX: Remove Chrome Locks for ALL users
-# This prevents "Profile in use" errors if the previous session crashed or wasn't cleared
+# This prevents "Profile in use" errors
 CHROME_DIR="/home/$PAM_USER/.config/google-chrome"
 if [ -d "$CHROME_DIR" ]; then
     rm -f "$CHROME_DIR/SingletonLock"
     rm -f "$CHROME_DIR/SingletonSocket"
     rm -f "$CHROME_DIR/SingletonCookie"
-    # Also clean standard "Default" profile locks just in case
-    rm -f "$CHROME_DIR/Default/Preferences" 
     logger "PAM_EXEC: Cleared Chrome locks for $PAM_USER"
 fi
 
@@ -95,7 +92,6 @@ if [ "$PAM_USER" = "$TARGET_USER" ]; then
     if [ -d "/home/$TARGET_USER" ]; then
         # Kill processes first to unlock files
         pkill -u "$TARGET_USER" || true
-        # Wait a split second for handles to release
         sleep 1
         rm -rf "/home/$TARGET_USER"
         logger "PAM_EXEC: Wiped home for $TARGET_USER"
@@ -104,7 +100,7 @@ fi
 EOF
 chmod +x /usr/local/bin/logout_cleanup.sh
 
-# Safely add to PAM (Check if it exists first to prevent duplicates)
+# Safely add to PAM
 if ! grep -q "logout_cleanup.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so type=close_session /usr/local/bin/logout_cleanup.sh" >> /etc/pam.d/common-session
     echo ">>> PAM module added."
@@ -142,8 +138,6 @@ EOF
 chmod 644 /etc/systemd/system/cleanup-student.service
 
 # 6. Systemd: Inactive User Cleanup (Weekly/Monthly)
-
-# The Script
 cat << 'EOF' > /usr/local/bin/cleanup_old_users.sh
 #!/bin/bash
 set -euo pipefail
@@ -153,10 +147,8 @@ DOMAIN_SUFFIX="@SEC.local"
 SKIP_USER="egallen@SEC.local"
 LOG_FILE="/var/log/cleanup_old_users.log"
 
-# Ensure log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# Process users
 lastlog -b "$DAYS" | awk -v suf="$DOMAIN_SUFFIX" 'NR>1 && index($0, suf){print $1}' | while read -r USER_ACCOUNT; do
     [[ -z "$USER_ACCOUNT" ]] && continue
     [[ "$USER_ACCOUNT" == "root" ]] && continue
@@ -173,7 +165,6 @@ done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
 
-# The Service
 cat << 'EOF' > /etc/systemd/system/delete-inactive-users.service
 [Unit]
 Description=Cleanup Inactive Student Profiles (>120 Days)
@@ -185,13 +176,11 @@ User=root
 ExecStart=/usr/local/bin/cleanup_old_users.sh
 EOF
 
-# The Timer (Monthly: First Wednesday at 13:20)
 cat << 'EOF' > /etc/systemd/system/delete-inactive-users.timer
 [Unit]
 Description=Run Inactive User Cleanup Monthly (First Wed)
 
 [Timer]
-# First Wednesday of the month
 OnCalendar=Wed *-*-1..7 13:20:00
 Persistent=true
 RandomizedDelaySec=5m
@@ -200,7 +189,6 @@ RandomizedDelaySec=5m
 WantedBy=timers.target
 EOF
 
-# Enable Systemd Units
 systemctl daemon-reload
 systemctl enable --now cleanup-student.service
 systemctl enable --now delete-inactive-users.timer
@@ -208,14 +196,15 @@ systemctl enable --now delete-inactive-users.timer
 # 7. UI Customization (GNOME dconf)
 echo ">>> Applying GNOME settings..."
 
-PROFILE_FILE="/etc/dconf/profile/custom"
+# FIX: Filename changed to 'user' so GNOME reads it by default
+PROFILE_FILE="/etc/dconf/profile/user"
 mkdir -p /etc/dconf/profile
 echo "user-db:user" > "$PROFILE_FILE"
 echo "system-db:custom" >> "$PROFILE_FILE"
 
 mkdir -p /etc/dconf/db/custom.d/locks
 
-# FIX 1: Updated Thonny name to match Snap version (thonny_thonny.desktop)
+# FIX: Updated Snap desktop names (thonny_thonny)
 cat << 'EOF' > /etc/dconf/db/custom.d/00-config
 [org/gnome/settings-daemon/plugins/power]
 ambient-enabled=false
@@ -263,7 +252,7 @@ show-home=false
 favorite-apps=["google-chrome.desktop", "firefox_firefox.desktop", "libreoffice-writer.desktop", "libreoffice-calc.desktop", "org.gnome.Nautilus.desktop", "org.gnome.Terminal.desktop", "code_code.desktop", "thonny_thonny.desktop"]
 EOF
 
-# FIX 2: Added /org/gnome/shell/favorite-apps to the LOCK file
+# FIX: Added favorite-apps to lock file
 cat << 'EOF' > /etc/dconf/db/custom.d/locks/00-lock
 /org/gnome/settings-daemon/plugins/power/ambient-enabled
 /org/gnome/settings-daemon/plugins/power/idle-brightness
@@ -288,13 +277,11 @@ cat << 'EOF' > /etc/dconf/db/custom.d/locks/00-lock
 /org/gnome/shell/favorite-apps
 EOF
 
-# CRITICAL: Update dconf database
 dconf update
 
 # 8. Miscellaneous Cleanup
 echo ">>> Performing final cleanup..."
 
-# Hide Apps
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
@@ -305,32 +292,28 @@ for app in "${APPS[@]}"; do
     fi
 done
 
-# Delete Chrome Shortcuts
 find /home -type f -iname "chrome-*-Default.desktop" -delete
 
-# Microbit Rules
 RULES_FILE="/etc/udev/rules.d/99-microbit.rules"
 if ! [ -f "$RULES_FILE" ]; then
   echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "$RULES_FILE"
 fi
 udevadm control --reload
 
-# 9. File Associations (Default Apps)
+# 9. File Associations (VS Code for TXT/CSV)
 echo ">>> Setting File Associations..."
 MIME_LIST="/usr/share/applications/mimeapps.list"
 
-# Ensure the file has the standard header
 if [ -f "$MIME_LIST" ]; then
     if ! grep -q "\[Default Applications\]" "$MIME_LIST"; then
         echo "[Default Applications]" >> "$MIME_LIST"
     fi
     
-    # Remove any existing CSV/TXT associations to prevent conflicts
+    # Clean existing rules
     sed -i '/text\/csv/d' "$MIME_LIST"
     sed -i '/text\/plain/d' "$MIME_LIST"
 
-    # Inject VS Code (code_code.desktop) as the default
-    # We append right after the [Default Applications] header
+    # Inject VS Code defaults
     sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME_LIST"
     sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME_LIST"
 fi
