@@ -15,7 +15,10 @@ sudo apt update && apt upgrade -y
 
 echo ">>> Managing packages..."
 # Remove deb versions
-sudo apt purge code thonny zenity gnome-initial-setup -y || true
+sudo apt purge code || true
+sudo apt purge thonny || true
+sudo apt purge zenity || true
+sudo apt purge gnome-initial-setup || true
 sudo apt autoremove -y
 
 # Install snap versions
