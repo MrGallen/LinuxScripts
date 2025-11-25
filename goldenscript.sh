@@ -11,16 +11,16 @@ echo ">>> Starting System Setup..."
 
 # 2. Updates & Package Management
 echo ">>> Updating system..."
-apt update && apt upgrade -y
+sudo apt update && apt upgrade -y
 
 echo ">>> Managing packages..."
 # Remove deb versions
-apt purge code thonny zenity gnome-initial-setup -y
-apt autoremove -y
+sudo apt purge code thonny zenity gnome-initial-setup -y
+sudo apt autoremove -y
 
 # Install snap versions
-snap install --classic code
-snap install thonny
+sudo snap install --classic code
+sudo snap install thonny
 
 # 3. Create Maintenance Scripts using Heredocs
 
@@ -86,17 +86,6 @@ if [ -d "$CHROME_DIR" ]; then
     logger "PAM_EXEC: Cleared Chrome locks for $PAM_USER"
 fi
 
-# 2. TARGET SPECIFIC: Wipe student@SEC.local completely
-TARGET_USER="student@SEC.local"
-if [ "$PAM_USER" = "$TARGET_USER" ]; then
-    if [ -d "/home/$TARGET_USER" ]; then
-        # Kill processes first to unlock files
-        pkill -u "$TARGET_USER" || true
-        sleep 1
-        rm -rf "/home/$TARGET_USER"
-        logger "PAM_EXEC: Wiped home for $TARGET_USER"
-    fi
-fi
 EOF
 chmod +x /usr/local/bin/logout_cleanup.sh
 
@@ -119,7 +108,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 02 16 * * * root apt update && apt upgrade -y && apt autoremove -y
 EOF
 
-# 5. Systemd: Wipe Student on Boot (Failsafe)
+# 5. Systemd: Wipe Student on Boot
 cat << 'EOF' > /etc/systemd/system/cleanup-student.service
 [Unit]
 Description=Wipe Student AD Profile on Boot
@@ -136,7 +125,7 @@ ExecStartPost=/usr/bin/logger "Systemd Cleanup: Wiped /home/student@SEC.local"
 WantedBy=multi-user.target
 EOF
 chmod 644 /etc/systemd/system/cleanup-student.service
-
+# Do not remove above
 # 6. Systemd: Inactive User Cleanup (Weekly/Monthly)
 cat << 'EOF' > /usr/local/bin/cleanup_old_users.sh
 #!/bin/bash
@@ -164,7 +153,7 @@ lastlog -b "$DAYS" | awk -v suf="$DOMAIN_SUFFIX" 'NR>1 && index($0, suf){print $
 done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
-
+# Test above 
 cat << 'EOF' > /etc/systemd/system/delete-inactive-users.service
 [Unit]
 Description=Cleanup Inactive Student Profiles (>120 Days)
