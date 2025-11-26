@@ -222,7 +222,7 @@ idle-delay=0
 
 [org/gnome/desktop/interface]
 accent-color="purple"
-color-scheme="prefer-dark"
+color-scheme="prefer-light"
 clock-show-seconds=false
 clock-show-weekday=true
 show-battery-percentage=true
@@ -231,8 +231,8 @@ show-battery-percentage=true
 sources=[("xkb", "gb")]
 
 [org/gnome/shell/extensions/dash-to-dock]
-autohide=false
-dock-fixed=true
+autohide=true
+dock-fixed=false
 extend-height=true
 dash-max-icon-size=54
 dock-position="BOTTOM"
