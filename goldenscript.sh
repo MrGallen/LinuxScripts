@@ -223,7 +223,7 @@ idle-delay=0
 [org/gnome/desktop/interface]
 accent-color="purple"
 color-scheme="prefer-light"
-clock-show-seconds=false
+clock-show-seconds=true
 clock-show-weekday=true
 show-battery-percentage=true
 
