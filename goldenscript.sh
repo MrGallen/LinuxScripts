@@ -174,6 +174,7 @@ systemctl enable --now cleanup-boot.service
 systemctl enable --now delete-inactive-users.timer
 
 # 7. UI Customization (GNOME dconf)
+apt purge gnome-initial-setup gnome-tour -y || true
 echo ">>> Applying GNOME settings..."
 mkdir -p /etc/dconf/profile
 echo "user-db:user" > /etc/dconf/profile/user
