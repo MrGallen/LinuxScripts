@@ -25,7 +25,7 @@ echo ">>> Managing packages..."
 sudo apt purge code thonny zenity gnome-initial-setup -y || true
 
 # Install Snaps
-sudo snap install --classic code
+sudo snap install --classic code || true
 sudo snap install thonny
 
 # 3. Create The "Wipe & Clean" Logic
