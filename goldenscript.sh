@@ -1,39 +1,44 @@
 #!/bin/bash
-set -e  # Stop on error
+set -e  # Exit immediately if a command exits with a non-zero status
 
 # --- CONFIGURATION ---
-STUDENT_USER="student@SEC.local"  # Exact username to wipe
-ADMIN_USER="secsuperuser"         # User to protect
+STUDENT_USER="student@SEC.local"
+ADMIN_USER_1="secsuperuser"
+ADMIN_USER_2="egallen@SEC.local"
 INACTIVE_DAYS=120
 # ---------------------
 
-# 1. Root Check
+# 1. ROOT CHECK
 if [ "$(id -u)" -ne 0 ]; then
-  echo "This script must be running as root. Exiting."
+  echo ">>> Error: Must run as root."
   exit 1
 fi
 
-echo ">>> Starting System Setup..."
+echo ">>> Starting Final System Setup..."
 
-# 2. Updates & Package Management
+# 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Updating system..."
 sudo apt update && apt upgrade -y
 sudo apt autoremove -y
 
-echo ">>> Managing packages..."
-# Purge conflicting DEBs
-sudo apt purge code thonny zenity gnome-initial-setup -y || true
+echo ">>> Cleaning packages..."
+# Aggressively remove 'deb' versions to prevent duplicates
+sudo apt purge "thonny*" "python3-thonny*" "code*" "gnome-initial-setup" "gnome-tour" -y || true
 
-# Install Snaps
+# Delete leftover shortcuts to avoid "Ghost Icons"
+sudo rm -f /usr/share/applications/thonny.desktop
+sudo rm -f /usr/share/applications/org.thonny.Thonny.desktop
+sudo rm -f /usr/share/applications/code.desktop
+sudo rm -f /usr/share/applications/vscode.desktop
+
+echo ">>> Installing Snaps..."
+# '|| true' ensures script continues if already installed
 sudo snap install --classic code || true
-sudo snap install thonny
+sudo snap install thonny || true
 
-# 3. Create The "Wipe & Clean" Logic
-
-# --- Script A: The Universal Cleaner (Used by Boot AND Logout) ---
+# 3. UNIVERSAL CLEANUP LOGIC (Used by Boot & Logout)
 cat << EOF > /usr/local/bin/universal_cleanup.sh
 #!/bin/bash
-
 TARGET_USER="\$1"
 ACTION="\$2" # 'chrome' or 'wipe'
 
@@ -49,7 +54,6 @@ clean_chrome() {
 
 wipe_user() {
     if [ -d "/home/\$TARGET_USER" ]; then
-        # Kill user processes first to allow clean deletion
         pkill -u "\$TARGET_USER" || true
         sleep 1
         rm -rf "/home/\$TARGET_USER"
@@ -57,187 +61,138 @@ wipe_user() {
     fi
 }
 
-if [ "\$ACTION" == "chrome" ]; then
-    clean_chrome
-elif [ "\$ACTION" == "wipe" ]; then
-    wipe_user
-fi
+if [ "\$ACTION" == "chrome" ]; then clean_chrome; fi
+if [ "\$ACTION" == "wipe" ]; then wipe_user; fi
 EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
-# --- Script B: PAM Logout Trigger ---
+# 4. PAM LOGOUT TRIGGER (Wipes immediately on sign out)
 cat << EOF > /usr/local/bin/pam_logout.sh
 #!/bin/bash
-# This script runs whenever ANY user logs out.
-
 if [ -z "\$PAM_USER" ]; then exit 0; fi
-
-# 1. Clean Chrome locks for EVERYONE on logout
 /usr/local/bin/universal_cleanup.sh "\$PAM_USER" chrome
-
-# 2. Wipe Student Account completely on logout
 if [ "\$PAM_USER" == "$STUDENT_USER" ]; then
     /usr/local/bin/universal_cleanup.sh "\$PAM_USER" wipe
 fi
 EOF
 chmod +x /usr/local/bin/pam_logout.sh
 
-# Register PAM module
 if ! grep -q "pam_logout.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so type=close_session /usr/local/bin/pam_logout.sh" >> /etc/pam.d/common-session
 fi
 
-# 4. Configure Crontab (Shutdown & Updates)
-cat << EOF > /etc/crontab
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# m h dom mon dow user  command
-@reboot root apt update && apt upgrade -y && apt autoremove -y
-15 16 * * * root shutdown -h now
-02 16 * * * root apt update && apt upgrade -y && apt autoremove -y
-EOF
-
-# 5. Systemd: Boot Cleanup (Safety Net)
+# 5. SYSTEMD BOOT CLEANUP (Safety net for crashes + Epoptes Fix)
 cat << EOF > /etc/systemd/system/cleanup-boot.service
 [Unit]
-Description=Safety Cleanup on Boot (Chrome Locks + Student Wipe + Epoptes)
+Description=Safety Cleanup (Chrome, Student, Epoptes)
 After=network.target
 
 [Service]
 Type=oneshot
 User=root
-# Wipe student folder if it exists
+# Wipe student if exists
 ExecStart=/bin/bash -c 'if [ -d "/home/$STUDENT_USER" ]; then rm -rf "/home/$STUDENT_USER"; fi'
-# Clean Chrome locks for ALL users
+# Clean Chrome locks globally
 ExecStart=/bin/bash -c 'find /home -maxdepth 2 -name "SingletonLock" -delete'
-# Clean stale Epoptes Client PID
+# Clean Stale Epoptes PID (Fixes "Service already running" error)
 ExecStart=/bin/bash -c 'rm -f /var/run/epoptes-client.pid'
-
 ExecStartPost=/usr/bin/logger "Systemd: Boot cleanup complete"
 
 [Install]
 WantedBy=multi-user.target
 EOF
 chmod 644 /etc/systemd/system/cleanup-boot.service
+systemctl daemon-reload
+systemctl enable --now cleanup-boot.service
 
-# 6. Systemd: Inactive User Cleanup
+# 6. UI ENFORCEMENT (The "Brute Force" Script)
+echo ">>> generating UI Enforcer script..."
+
+# Detect Snap Filenames dynamically
+if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
+if [ -f "/var/lib/snapd/desktop/applications/thonny_thonny.desktop" ]; then THONNY="thonny_thonny.desktop"; else THONNY="thonny.desktop"; fi
+
+cat << EOF > /usr/local/bin/force_ui.sh
+#!/bin/bash
+
+# --- 1. ADMIN PROTECTION ---
+# If Admin logs in, EXIT immediately. Do not touch settings.
+if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
+    exit 0
+fi
+
+# --- 2. WAIT FOR DESKTOP ---
+sleep 3
+
+# --- 3. VISUALS & BEHAVIOR ---
+# Purple Accent / Light Mode
+gsettings set org.gnome.desktop.interface accent-color 'purple'
+gsettings set org.gnome.desktop.interface color-scheme 'prefer-light'
+
+# Hot Corner (Top-Left)
+gsettings set org.gnome.desktop.interface enable-hot-corners true
+
+# Clock & Battery
+gsettings set org.gnome.desktop.interface clock-show-seconds true
+gsettings set org.gnome.desktop.interface clock-show-weekday true
+gsettings set org.gnome.desktop.interface show-battery-percentage true
+
+# --- 4. POWER (NO SLEEP) ---
+gsettings set org.gnome.desktop.screensaver lock-enabled false
+gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
+gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
+gsettings set org.gnome.desktop.session idle-delay 0
+
+# --- 5. DOCK SETTINGS (Apply to both Standard & Ubuntu Docks) ---
+for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
+    gsettings set \$schema dock-position 'BOTTOM'
+    gsettings set \$schema autohide true
+    gsettings set \$schema extend-height false   # Panel Mode Disabled (Floating)
+    gsettings set \$schema dash-max-icon-size 54
+    gsettings set \$schema dock-fixed false
+done
+
+# --- 6. ICONS ---
+gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
+
+# --- 7. CLEANUP ---
+gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
+EOF
+
+chmod +x /usr/local/bin/force_ui.sh
+
+# Create Autostart Entry (Runs for EVERY user)
+cat << EOF > /etc/xdg/autostart/force_ui.desktop
+[Desktop Entry]
+Type=Application
+Name=Force Student UI
+Exec=/usr/local/bin/force_ui.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+EOF
+
+# 7. INACTIVE USER CLEANUP (Maintenance)
 cat << EOF > /usr/local/bin/cleanup_old_users.sh
 #!/bin/bash
 set -euo pipefail
-
-DAYS=$INACTIVE_DAYS
-DOMAIN_SUFFIX="@SEC.local"
-SKIP_USER="$ADMIN_USER"
-LOG_FILE="/var/log/cleanup_old_users.log"
-
-lastlog -b "\$DAYS" | awk -v suf="\$DOMAIN_SUFFIX" 'NR>1 && index(\$0, suf){print \$1}' | while read -r USER_ACCOUNT; do
-    [[ -z "\$USER_ACCOUNT" ]] && continue
-    [[ "\$USER_ACCOUNT" == "root" ]] && continue
-    [[ "\$USER_ACCOUNT" == "\$SKIP_USER" ]] && continue
-
-    HOME_DIR="/home/\$USER_ACCOUNT"
-    if [ -d "\$HOME_DIR" ]; then
-        pkill -u "\$USER_ACCOUNT" || true
-        rm -rf "\$HOME_DIR"
-        echo "\$(date) INFO: Removed \$HOME_DIR for \$USER_ACCOUNT" >> "\$LOG_FILE"
-        logger "Inactive Cleanup: Wiped profile for \$USER_ACCOUNT"
+lastlog -b "$INACTIVE_DAYS" | awk 'NR>1 {print \$1}' | while read -r U; do
+    [[ -z "\$U" || "\$U" == "root" || "\$U" == "$ADMIN_USER_1" || "\$U" == "$ADMIN_USER_2" ]] && continue
+    if [ -d "/home/\$U" ]; then
+        pkill -u "\$U" || true
+        rm -rf "/home/\$U"
+        logger "Inactive Cleanup: Wiped profile for \$U"
     fi
 done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
 
-cat << EOF > /etc/systemd/system/delete-inactive-users.service
-[Unit]
-Description=Cleanup Inactive Profiles
-After=network-online.target sssd.service
+# 8. MISC FIXES
+echo ">>> Applying final fixes..."
 
-[Service]
-Type=oneshot
-User=root
-ExecStart=/usr/local/bin/cleanup_old_users.sh
-EOF
-
-cat << EOF > /etc/systemd/system/delete-inactive-users.timer
-[Unit]
-Description=Run Inactive User Cleanup Monthly
-[Timer]
-OnCalendar=Wed *-*-1..7 13:20:00
-Persistent=true
-RandomizedDelaySec=5m
-[Install]
-WantedBy=timers.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now cleanup-boot.service
-systemctl enable --now delete-inactive-users.timer
-
-# 7. UI Customization (GNOME dconf)
-apt purge gnome-initial-setup gnome-tour -y || true
-echo ">>> Applying GNOME settings..."
-mkdir -p /etc/dconf/profile
-echo "user-db:user" > /etc/dconf/profile/user
-echo "system-db:custom" >> /etc/dconf/profile/user
-mkdir -p /etc/dconf/db/custom.d/locks
-
-# Settings
-cat << EOF > /etc/dconf/db/custom.d/00-config
-[org/gnome/settings-daemon/plugins/power]
-ambient-enabled=false
-idle-brightness=30
-idle-dim=false
-lid-close-ac-action="suspend"
-lid-close-battery-action="suspend"
-power-button-action="interactive"
-sleep-inactive-ac-timeout=0
-sleep-inactive-battery-timeout=0
-
-[org/gnome/desktop/screensaver]
-idle-activation-enabled=false
-lock-enabled=false
-
-[org/gnome/desktop/session]
-idle-delay=uint32 0
-
-[org/gnome/desktop/interface]
-accent-color="purple"
-color-scheme="prefer-light"
-clock-show-seconds=true
-clock-show-weekday=true
-show-battery-percentage=true
-
-[org/gnome/shell/extensions/dash-to-dock]
-autohide=true
-dock-fixed=false
-extend-height=true
-dash-max-icon-size=54
-dock-position="BOTTOM"
-
-[org/gnome/shell]
-favorite-apps=['google-chrome.desktop', 'firefox_firefox.desktop', 'libreoffice-writer.desktop', 'libreoffice-calc.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'code_code.desktop', 'thonny_thonny.desktop']
-EOF
-
-# Locks
-cat << EOF > /etc/dconf/db/custom.d/locks/00-lock
-/org/gnome/settings-daemon/plugins/power/ambient-enabled
-/org/gnome/settings-daemon/plugins/power/idle-brightness
-/org/gnome/settings-daemon/plugins/power/idle-dim
-/org/gnome/settings-daemon/plugins/power/lid-close-ac-action
-/org/gnome/desktop/screensaver/idle-activation-enabled
-/org/gnome/desktop/screensaver/lock-enabled
-/org/gnome/desktop/session/idle-delay
-/org/gnome/desktop/interface/show-battery-percentage
-/org/gnome/shell/extensions/dash-to-dock/dock-position
-/org/gnome/shell/extensions/dash-to-dock/autohide
-/org/gnome/shell/favorite-apps
-EOF
-dconf update
-
-# 8. Miscellaneous
-echo ">>> Performing final cleanup..."
-
-# Epoptes Keepalive Fix
+# Epoptes Keepalive (Fixes Black Screens)
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_intvl = 10
@@ -245,7 +200,7 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# Hide VNC/Terminals
+# Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
@@ -256,14 +211,17 @@ done
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# 9. File Associations
-MIME_LIST="/usr/share/applications/mimeapps.list"
-if [ -f "$MIME_LIST" ]; then
-    grep -q "\[Default Applications\]" "$MIME_LIST" || echo "[Default Applications]" >> "$MIME_LIST"
-    sed -i '/text\/csv/d' "$MIME_LIST"
-    sed -i '/text\/plain/d' "$MIME_LIST"
-    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME_LIST"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME_LIST"
+# File Associations (VS Code for CSV/TXT)
+MIME="/usr/share/applications/mimeapps.list"
+if [ -f "$MIME" ]; then
+    grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
+    sed -i '/text\/csv/d' "$MIME"
+    sed -i '/text\/plain/d' "$MIME"
+    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
 fi
 
-echo ">>> Setup Complete! Please Reboot."
+# Reset Student Profile to force new script
+rm -f /home/$STUDENT_USER/.config/dconf/user
+
+echo ">>> Setup Complete! Rebooting is highly recommended."
