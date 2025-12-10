@@ -7,19 +7,22 @@ set -e  # Exit immediately if a command exits with a non-zero status
 # ==========================================
 
 # --- CONFIGURATION ---
+# 1. ACCOUNTS
 STUDENT_USER="student@SEC.local"
 ADMIN_USER_1="secsuperuser"
 ADMIN_USER_2="egallen@SEC.local"
 
-# User Groups (Space-separated lists)
+# 2. WI-FI SETTINGS (CHANGE THE NAME!)
+WIFI_SSID="Admin"   # <--- CHANGE THIS to your exact Wi-Fi Name
+WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
+
+# 3. GROUPS & SERVER
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
-
-# Epoptes Configuration
 EPOPTES_SERVER="epoptes.server.local"
 
-# Settings
+# 4. SETTINGS
 INACTIVE_DAYS=120
 PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
 # ---------------------
@@ -32,21 +35,24 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
+# 1.5 CONNECT TO WI-FI (PRIORITY)
+# We do this first so updates can run
+echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
+# Try to connect. We use || true so the script doesn't crash if the SSID is wrong.
+nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" > /dev/null 2>&1 || echo ">>> Warning: Wi-Fi connection failed. Check SSID name or range."
+
 # 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Preparing system..."
 export DEBIAN_FRONTEND=noninteractive
 
-# A. CLEANUP FIRST (Remove old versions/junk before installing)
+# A. CLEANUP FIRST
 echo ">>> Purging conflicting packages..."
-# Remove Snap version of Thonny if present (it breaks libraries)
 snap remove thonny || true
-# Remove unnecessary apps
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
 
 # B. INSTALL SYSTEM LIBRARIES & APPS
 echo ">>> Installing System & Python Libraries..."
 apt-get update -q 
-# Installing Thonny via APT ensures it sees all these python libraries automatically.
 apt-get install -y -q \
     thonny \
     gnome-terminal \
@@ -60,7 +66,6 @@ apt-get install -y -q \
 
 # C. INSTALL CUSTOM PIP LIBRARIES
 echo ">>> Installing Custom PyPI Libraries..."
-# --break-system-packages is required on Ubuntu 24.04 to install to global python
 pip3 install firebase compscifirebase --break-system-packages
 
 # D. SYSTEM UPGRADE
@@ -68,12 +73,9 @@ echo ">>> Upgrading System..."
 apt-get upgrade -y -q
 apt-get autoremove -y -q
 
-# E. INSTALL SNAPS (VS Code Only)
+# E. INSTALL SNAPS
 echo ">>> Installing Snaps..."
-# VS Code Classic can see system libraries if configured, but Thonny is better via APT.
 snap install --classic code || true
-
-# Delete leftover shortcuts
 rm -f /usr/share/applications/code.desktop
 rm -f /usr/share/applications/vscode.desktop
 
@@ -131,7 +133,6 @@ chmod +x /etc/cron.daily/sec_cleanup
 # 4. PAM MASTER CONTROLLER
 echo ">>> Configuring PAM hooks..."
 
-# UPDATED POLICY TO KILL "DEFAULT BROWSER" POPUPS
 mkdir -p /usr/local/etc/chrome_policies
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
@@ -273,9 +274,7 @@ systemctl enable --now cleanup-boot.service
 
 # 7. UI ENFORCEMENT
 echo ">>> Generating UI Enforcer script..."
-# Detect VS Code Desktop file (Snap vs Apt naming)
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
-# We use the APT Thonny ID now
 THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
@@ -365,4 +364,26 @@ if [ -f "$MIME" ]; then
     sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
     sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
     sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-
+    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-chrome.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a x-scheme-handler/https=google-chrome.desktop' "$MIME"
+fi
+
+# 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
+echo ">>> Scheduling Smart Shutdown & Maintenance..."
+
+# A. Create the Maintenance/Shutdown Script
+cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
+#!/bin/bash
+set -u
+
+# --- CONFIG ---
+CLEANUP_DAY=2  # 2 = Tuesday
+# ----------------
+
+# 1. NOTIFY USERS (5 Minute Warning)
+MSG="School day ending. System will install updates and shut down in 5 minutes. Please save your work."
+wall "$MSG"
+LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
+if [ -n "$LOGGED_USER" ]; then
+    USER_ID=$(id -u "$LOGGED_USER")
+    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=
