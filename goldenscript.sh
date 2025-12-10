@@ -25,7 +25,7 @@ EPOPTES_SERVER="epoptes.server.local"
 
 # 4. SETTINGS
 INACTIVE_DAYS=120
-PDF_URL="https://www.examinations.ie/docs/viewer.php?q=e5c7ee46cecf19bc20023e32f0664b6b6a152c15" 
+PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
 # ---------------------
 
 # 1. ROOT CHECK
@@ -495,4 +495,18 @@ if [ -f "$EPOPTES_FILE" ]; then
         echo ">>> Epoptes already configured correctly."
     else
         echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
-        sed -i -E "s/^#?SERVER=.*/SERVER=$EPO
+        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
+        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
+    fi
+else
+    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
+fi
+
+# C. Set Timezone
+timedatectl set-timezone Europe/Dublin
+
+# D. SELF DESTRUCT (Security)
+echo ">>> CONFIGURATION COMPLETE."
+echo ">>> Deleting this script file to protect Wi-Fi passwords..."
+rm -- "$0"
+echo ">>> Script deleted. Please Reboot."
