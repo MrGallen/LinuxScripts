@@ -12,11 +12,12 @@ STUDENT_USER="student@SEC.local"
 ADMIN_USER_1="secsuperuser"
 ADMIN_USER_2="egallen@SEC.local"
 
-# 2. WI-FI SETTINGS (CHANGE THE NAME!)
-WIFI_SSID="Admin"   # <--- CHANGE THIS to your exact Wi-Fi Name
+# 2. WI-FI SETTINGS
+WIFI_SSID="Admin"
 WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
+# Space-separated list of accounts. This works perfectly for multiple mock users.
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
@@ -35,11 +36,13 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
-# 1.5 CONNECT TO WI-FI (PRIORITY)
-# We do this first so updates can run
+# 1.5 CONNECT TO WI-FI (Fixed Logic)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
-# Try to connect. We use || true so the script doesn't crash if the SSID is wrong.
-nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" > /dev/null 2>&1 || echo ">>> Warning: Wi-Fi connection failed. Check SSID name or range."
+nmcli radio wifi on
+# Delete any existing profile with this name to prevent conflicts
+nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
+# Connect with a 15-second timeout to avoid hanging forever
+nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Preparing system..."
@@ -167,13 +170,29 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    iptables -A OUTPUT -o lo -j ACCEPT
-    iptables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
+    # 1. ALLOW Loopback (Internal Apps)
+    iptables -I OUTPUT 1 -o lo -j ACCEPT
+    
+    # 2. ALLOW Local Network (Epoptes needs this!)
+    # Assuming school uses standard 192.168.x.x or 10.x.x.x
+    # If uncertain, we allow all private ranges.
+    iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
+    iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
+    iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
+
+    # 3. BLOCK Everything Else for this User
+    # We use -I (Insert) to make sure this is at the TOP of the list
+    iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
+    
+    # 4. BLOCK IPv6 as well (To be safe)
+    ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
+    # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    iptables -D OUTPUT -o lo -j ACCEPT || true
+    ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
+    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -198,6 +217,7 @@ if [ "\$TYPE" == "open_session" ]; then
 
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         block_internet
+        logger "SEC_SCRIPT: Internet Blocked for \$USER"
     fi
 
     if [ "\$USER" == "\$EXAM" ] || [ "\$USER" == "\$TEST" ]; then
@@ -253,15 +273,10 @@ After=network.target
 [Service]
 Type=oneshot
 User=root
-# 1. Wipe student if exists
 ExecStart=/bin/bash -c 'if [ -d "/home/$STUDENT_USER" ]; then rm -rf "/home/$STUDENT_USER"; fi'
-# 2. Clean Chrome locks
 ExecStart=/bin/bash -c 'find /home -maxdepth 2 -name "SingletonLock" -delete'
-# 3. Clean Epoptes PID
 ExecStart=/bin/bash -c 'rm -f /var/run/epoptes-client.pid'
-# 4. AUTO-HEAL: Fetch Epoptes Cert if missing
 ExecStart=/bin/bash -c 'if [ ! -f /etc/epoptes/server.crt ]; then epoptes-client -c || true; fi'
-# 5. CRITICAL: Run Inactive User Cleanup (Failsafe)
 ExecStart=/usr/local/bin/cleanup_old_users.sh
 ExecStartPost=/usr/bin/logger "Systemd: Boot cleanup complete"
 
@@ -291,12 +306,25 @@ gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
+    # === STRICT EXAM MODE ===
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
-    gsettings set org.gnome.shell favorite-apps "['org.gnome.Nautilus.desktop', '$THONNY']"
+    
+    # 1. DOCK: ONLY THONNY
+    gsettings set org.gnome.shell favorite-apps "['$THONNY']"
+    
+    # 2. DISABLE "SUPER" KEY (Prevents opening App Menu)
+    gsettings set org.gnome.mutter overlay-key ''
+    gsettings set org.gnome.shell.keybindings toggle-overview "[]"
+    
+    # 3. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # STUDENT MODE: Added Terminal to the dock
+    # === STUDENT MODE ===
+    # Reset Super Key for normal students
+    gsettings set org.gnome.mutter overlay-key 'Super_L'
+    gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
+    
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
@@ -339,7 +367,7 @@ mkdir -p /etc/dconf/db/local.d
 echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
 dconf update
 
-# Hide VNC & Terminal Icons (Optional: We un-hid Terminal in dock, but hide the icon in menu if desired)
+# Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
@@ -356,7 +384,6 @@ if [ -f "$MIME" ]; then
     grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
     sed -i '/text\/csv/d' "$MIME"
     sed -i '/text\/plain/d' "$MIME"
-    # Ensure Chrome is default for Web to stop OS popups
     sed -i '/text\/html/d' "$MIME"
     sed -i '/x-scheme-handler\/http/d' "$MIME"
     sed -i '/x-scheme-handler\/https/d' "$MIME"
@@ -386,4 +413,85 @@ wall "$MSG"
 LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
 if [ -n "$LOGGED_USER" ]; then
     USER_ID=$(id -u "$LOGGED_USER")
-    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=
+    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=critical --icon=system-shutdown || true
+fi
+
+# 2. WAIT 5 MINUTES
+sleep 300
+
+# 3. PREVENT SLEEP (Keep system alive for updates)
+systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
+
+    # 4. RUN SYSTEM UPDATES
+    logger "SmartShutdown: Starting system updates..."
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Update Apt
+    apt-get update -q
+    apt-get upgrade -y -q
+    apt-get autoremove -y -q
+    apt-get clean -q
+    
+    # Update Snaps (VS Code only now)
+    pkill -f "code" || true
+    pkill -f "thonny" || true
+    snap refresh || true
+
+    # 5. TUESDAY CLEANUP CHECK
+    if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
+        logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
+        if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
+            /usr/local/bin/cleanup_old_users.sh
+        fi
+    fi
+'
+
+# 6. SHUTDOWN
+logger "SmartShutdown: Maintenance complete. Powering off."
+poweroff
+EOF
+chmod 750 /usr/local/bin/smart_shutdown.sh
+
+# B. Create the Schedule (Cron)
+cat << EOF > /etc/cron.d/school_shutdown_schedule
+# m h dom mon dow user  command
+10 16 * * 1-4 root /usr/local/bin/smart_shutdown.sh
+25 13 * * 5   root /usr/local/bin/smart_shutdown.sh
+EOF
+chmod 644 /etc/cron.d/school_shutdown_schedule
+
+# 10. FINAL POLISH
+echo ">>> Applying final polish..."
+
+# A. Disable Software Update Notifications
+cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::AutocleanInterval "0";
+APT::Periodic::Unattended-Upgrade "0";
+EOF
+gsettings set com.ubuntu.update-notifier no-show-notifications true || true
+
+# B. Configure Epoptes Server (Check first)
+EPOPTES_FILE="/etc/default/epoptes-client"
+
+if [ -f "$EPOPTES_FILE" ]; then
+    if grep -q "^SERVER=$EPOPTES_SERVER" "$EPOPTES_FILE"; then
+        echo ">>> Epoptes already configured correctly."
+    else
+        echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
+        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
+        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
+    fi
+else
+    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
+fi
+
+# C. Set Timezone
+timedatectl set-timezone Europe/Dublin
+
+# D. SELF DESTRUCT (Security)
+echo ">>> CONFIGURATION COMPLETE."
+echo ">>> Deleting this script file to protect Wi-Fi passwords..."
+rm -- "$0"
+echo ">>> Script deleted. Please Reboot."
