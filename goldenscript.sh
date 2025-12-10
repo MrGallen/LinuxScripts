@@ -66,19 +66,69 @@ if [ "\$ACTION" == "wipe" ]; then wipe_user; fi
 EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
-# 4. PAM LOGOUT TRIGGER (Wipes immediately on sign out)
-cat << EOF > /usr/local/bin/pam_logout.sh
+# 4. PAM LOGIN/LOGOUT TRIGGER
+# This script runs as ROOT every time someone logs in or out.
+# It swaps the Chrome Policy file in and out based on the user.
+
+echo ">>> Configuring PAM hooks..."
+
+# 1. Create the "Gold Master" Policy file (Hidden in a safe place)
+mkdir -p /usr/local/etc/chrome_policies
+cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
+{
+  "DefaultSearchProviderEnabled": true,
+  "DefaultSearchProviderName": "Google",
+  "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
+  "ShowFirstRunExperience": false,
+  "PromotionalTabsEnabled": false,
+  "BrowserSignin": 0
+}
+EOF
+
+# 2. Create the Hook Script
+cat << EOF > /usr/local/bin/pam_hook.sh
 #!/bin/bash
-if [ -z "\$PAM_USER" ]; then exit 0; fi
-/usr/local/bin/universal_cleanup.sh "\$PAM_USER" chrome
-if [ "\$PAM_USER" == "$STUDENT_USER" ]; then
-    /usr/local/bin/universal_cleanup.sh "\$PAM_USER" wipe
+USER="\$PAM_USER"
+TYPE="\$PAM_TYPE" # 'open_session' or 'close_session'
+
+CHROME_MANAGED="/etc/opt/chrome/policies/managed"
+POLICY_SOURCE="/usr/local/etc/chrome_policies/student_policy.json"
+POLICY_DEST="\$CHROME_MANAGED/student_policy.json"
+
+# Function to Apply Policy (Student Only)
+apply_policy() {
+    mkdir -p "\$CHROME_MANAGED"
+    ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
+}
+
+# Function to Remove Policy (Everyone else)
+remove_policy() {
+    rm -f "\$POLICY_DEST"
+}
+
+if [ "\$TYPE" == "open_session" ]; then
+    if [ "\$USER" == "$STUDENT_USER" ]; then
+        apply_policy
+    else
+        remove_policy
+    fi
+fi
+
+if [ "\$TYPE" == "close_session" ]; then
+    # Trigger the cleanup script (from Section 3)
+    /usr/local/bin/universal_cleanup.sh "\$USER" chrome
+    
+    if [ "\$USER" == "$STUDENT_USER" ]; then
+        remove_policy
+        /usr/local/bin/universal_cleanup.sh "\$USER" wipe
+    fi
 fi
 EOF
-chmod +x /usr/local/bin/pam_logout.sh
+chmod +x /usr/local/bin/pam_hook.sh
 
-if ! grep -q "pam_logout.sh" /etc/pam.d/common-session; then
-    echo "session optional pam_exec.so type=close_session /usr/local/bin/pam_logout.sh" >> /etc/pam.d/common-session
+# 3. Register it in PAM (If not already there)
+if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
+    echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
 
 # 5. SYSTEMD BOOT CLEANUP (Safety net for crashes + Epoptes Fix)
@@ -108,7 +158,6 @@ systemctl enable --now cleanup-boot.service
 # 6. UI ENFORCEMENT (The "Brute Force" Script)
 echo ">>> generating UI Enforcer script..."
 
-# Detect Snap Filenames dynamically
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
 if [ -f "/var/lib/snapd/desktop/applications/thonny_thonny.desktop" ]; then THONNY="thonny_thonny.desktop"; else THONNY="thonny.desktop"; fi
 
@@ -123,43 +172,46 @@ fi
 # --- 2. WAIT FOR DESKTOP ---
 sleep 3
 
-# --- 3. AUDIO (MUTE ON LOGIN) ---
+# --- 3. AUDIO (MUTE) ---
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
 
-# --- 4. VISUALS (FIXED PURPLE ACCENT) ---
-# On Ubuntu, "Accent Color" is actually a specific Theme Name.
-# We must set both the Interface (Windows) and Icons to 'Yaru-purple'.
+# --- 4. VISUALS (THE ULTIMATE PURPLE FIX) ---
+# We set this 3 different ways to ensure it sticks on all Ubuntu versions.
 
+# Method A: Modern Accent Color (Ubuntu 22.10+)
+gsettings set org.gnome.desktop.interface accent-color 'purple' || true
+
+# Method B: The "Yaru" Theme Overrides (Ubuntu 20.04 - 22.04)
+# This forces the GTK theme to use the purple assets explicitly.
 gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
 gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
-gsettings set org.gnome.desktop.interface color-scheme 'default'
+gsettings set org.gnome.desktop.interface cursor-theme 'Yaru'
 
-# Hot Corner (Top-Left) & Active Screen Edges
+# Method C: Color Scheme
+gsettings set org.gnome.desktop.interface color-scheme 'default'
+gsettings set org.gnome.desktop.interface gtk-color-scheme 'default'
+
+# --- 5. INTERFACE BEHAVIOR ---
 gsettings set org.gnome.desktop.interface enable-hot-corners true
 gsettings set org.gnome.mutter edge-tiling true
-
-# Clock & Battery
 gsettings set org.gnome.desktop.interface clock-show-seconds true
 gsettings set org.gnome.desktop.interface clock-show-weekday true
 gsettings set org.gnome.desktop.interface show-battery-percentage true
 
-# --- 5. POWER & PERFORMANCE ---
+# --- 6. POWER (ALWAYS ON) ---
 powerprofilesctl set performance || true
-
-# NO SLEEP / NO BLANK / NO SUSPEND
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
 gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
-gsettings set org.gnome.settings-daemon.plugins.power power-saver-profile-on-low-battery false
 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
 gsettings set org.gnome.desktop.session idle-delay 0
 
-# --- 6. RESTRICTIONS (PRINTERS) ---
+# --- 7. RESTRICTIONS (PRINTERS) ---
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
-# --- 7. DOCK SETTINGS ---
+# --- 8. DOCK & ICONS ---
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
@@ -168,7 +220,6 @@ for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensi
     gsettings set \$schema dock-fixed false
 done
 
-# --- 8. ICONS ---
 gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
 
 # --- 9. CLEANUP ---
@@ -220,33 +271,6 @@ for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
     [ -f "$FILE" ] && echo "NoDisplay=true" >> "$FILE"
 done
-
-# 9. CHROME POLICY (Bypass Popups & Force Google)
-echo ">>> Configuring Chrome Enterprise Policies..."
-
-# Create the directory for managed policies
-mkdir -p /etc/opt/chrome/policies/managed
-
-# Write the policy file.
-# This forces Google as the default and disables the "Welcome" and "First Run" screens.
-cat << EOF > /etc/opt/chrome/policies/managed/student_policy.json
-{
-  "DefaultSearchProviderEnabled": true,
-  "DefaultSearchProviderName": "Google",
-  "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
-  "DefaultSearchProviderSuggestURL": "https://www.google.com/complete/search?output=chrome&q={searchTerms}",
-  "DefaultSearchProviderIconURL": "https://www.google.com/favicon.ico",
-  "ShowFirstRunExperience": false,
-  "PromotionalTabsEnabled": false,
-  "MetricsReportingEnabled": false,
-  "BrowserSignin": 0
-}
-EOF
-
-# Ensure the file is readable by all users
-chmod 644 /etc/opt/chrome/policies/managed/student_policy.json
-
-echo ">>> Chrome Policies applied."
 
 # Microbit Rules
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
