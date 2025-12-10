@@ -67,12 +67,11 @@ EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
 # 4. PAM LOGIN/LOGOUT TRIGGER
-# This script runs as ROOT every time someone logs in or out.
-# It swaps the Chrome Policy file in and out based on the user.
+# This handles Cleanup on Logout AND Chrome Policy toggling on Login.
 
 echo ">>> Configuring PAM hooks..."
 
-# 1. Create the "Gold Master" Policy file (Hidden in a safe place)
+# A. Create the "Gold Master" Policy file (Hidden in a safe place)
 mkdir -p /usr/local/etc/chrome_policies
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
@@ -85,7 +84,7 @@ cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 }
 EOF
 
-# 2. Create the Hook Script
+# B. Create the Hook Script
 cat << EOF > /usr/local/bin/pam_hook.sh
 #!/bin/bash
 USER="\$PAM_USER"
@@ -98,26 +97,32 @@ POLICY_DEST="\$CHROME_MANAGED/student_policy.json"
 # Function to Apply Policy (Student Only)
 apply_policy() {
     mkdir -p "\$CHROME_MANAGED"
+    # Link the policy file so it is active
     ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
 }
 
-# Function to Remove Policy (Everyone else)
+# Function to Remove Policy (Admins)
 remove_policy() {
+    # Remove the link so Chrome is normal
     rm -f "\$POLICY_DEST"
 }
 
+# --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
     if [ "\$USER" == "$STUDENT_USER" ]; then
         apply_policy
     else
+        # If Admin logs in, ensure they don't have the student restrictions
         remove_policy
     fi
 fi
 
+# --- LOGOUT LOGIC ---
 if [ "\$TYPE" == "close_session" ]; then
-    # Trigger the cleanup script (from Section 3)
+    # Always clean Chrome locks for everyone to prevent crashes
     /usr/local/bin/universal_cleanup.sh "\$USER" chrome
     
+    # If Student logs out, wipe their data and remove policy
     if [ "\$USER" == "$STUDENT_USER" ]; then
         remove_policy
         /usr/local/bin/universal_cleanup.sh "\$USER" wipe
@@ -126,7 +131,7 @@ fi
 EOF
 chmod +x /usr/local/bin/pam_hook.sh
 
-# 3. Register it in PAM (If not already there)
+# C. Register it in PAM (If not already there)
 if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
