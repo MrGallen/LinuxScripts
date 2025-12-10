@@ -171,23 +171,25 @@ setup_exam_files() {
 # --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
     
-    # 1. STUDENT: Give Chrome Policy (Bypass Popups)
+    # 1. STUDENT
     if [ "\$USER" == "\$STUDENT" ]; then
         mkdir -p "\$CHROME_MANAGED"
         ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
+        logger "SEC_SCRIPT: Applied Chrome Policy for \$USER"  # <--- NEW LOG
     else
-        # Ensure Admins/others don't get the Student policy
         rm -f "\$POLICY_DEST"
     fi
 
-    # 2. NO INTERNET GROUPS (Mock, Exam, Test, LCCS...)
+    # 2. NO INTERNET
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         block_internet
+        logger "SEC_SCRIPT: Blocked Internet for \$USER"      # <--- NEW LOG
     fi
 
-    # 3. EXAM / TEST FILES (Copy PDF)
+    # 3. EXAM FILES
     if [ "\$USER" == "\$EXAM" ] || [ "\$USER" == "\$TEST" ]; then
         setup_exam_files &
+        logger "SEC_SCRIPT: Deployed Exam PDF for \$USER"     # <--- NEW LOG
     fi
 fi
 
@@ -330,13 +332,35 @@ EOF
 cat << EOF > /usr/local/bin/cleanup_old_users.sh
 #!/bin/bash
 set -euo pipefail
+
+# Define threshold for system UIDs (usually 1000 on standard Linux distros)
+UID_MIN=1000
+
 lastlog -b "$INACTIVE_DAYS" | awk 'NR>1 {print \$1}' | while read -r U; do
-    [[ -z "\$U" || "\$U" == "root" || "\$U" == "$ADMIN_USER_1" || "\$U" == "$ADMIN_USER_2" ]] && continue
-    if [ -d "/home/\$U" ]; then
-        pkill -u "\$U" || true
-        rm -rf "/home/\$U"
-        logger "Inactive Cleanup: Wiped profile for \$U"
+    
+    # 1. Skip if user is empty
+    [[ -z "\$U" ]] && continue
+
+    # 2. Safety Check: Get UID to ensure we don't delete system services
+    USER_UID=\$(id -u "\$U" 2>/dev/null || echo 0)
+    
+    # 3. Exclusions: Root, Admins, or System Accounts
+    if [[ "\$USER_UID" -lt "\$UID_MIN" || "\$U" == "root" || "\$U" == "$ADMIN_USER_1" || "\$U" == "$ADMIN_USER_2" ]]; then
+        continue
     fi
+
+    # 4. Perform Cleanup
+    logger "Inactive Cleanup: Removing account for \$U"
+    
+    # Kill processes
+    pkill -u "\$U" || true
+    
+    # Delete the user AND their home directory/mail spool
+    # -r removes the home directory and mail spool
+    # -f forces removal even if user is logged in (redundant with pkill but safer)
+    userdel -r -f "\$U"
+
+    logger "Inactive Cleanup: User \$U deleted successfully."
 done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
@@ -351,6 +375,19 @@ net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
+
+# Disable Fast User Switching (Prevents logic conflicts)
+cat << EOF > /etc/dconf/profile/user
+user-db:user
+system-db:local
+EOF
+
+mkdir -p /etc/dconf/db/local.d
+cat << EOF > /etc/dconf/db/local.d/00-disable-switching
+[org/gnome/desktop/lockdown]
+disable-user-switching=true
+EOF
+dconf update
 
 # Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
