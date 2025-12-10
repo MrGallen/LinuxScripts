@@ -131,6 +131,7 @@ chmod +x /etc/cron.daily/sec_cleanup
 # 4. PAM MASTER CONTROLLER
 echo ">>> Configuring PAM hooks..."
 
+# UPDATED POLICY TO KILL "DEFAULT BROWSER" POPUPS
 mkdir -p /usr/local/etc/chrome_policies
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
@@ -139,7 +140,11 @@ cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
   "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
   "ShowFirstRunExperience": false,
   "PromotionalTabsEnabled": false,
-  "BrowserSignin": 0
+  "BrowserSignin": 0,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "SyncDisabled": true,
+  "PasswordManagerEnabled": false
 }
 EOF
 
@@ -346,114 +351,18 @@ done
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# File Associations
+# File Associations & DEFAULT BROWSER FIX
 MIME="/usr/share/applications/mimeapps.list"
 if [ -f "$MIME" ]; then
     grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
     sed -i '/text\/csv/d' "$MIME"
     sed -i '/text\/plain/d' "$MIME"
+    # Ensure Chrome is default for Web to stop OS popups
+    sed -i '/text\/html/d' "$MIME"
+    sed -i '/x-scheme-handler\/http/d' "$MIME"
+    sed -i '/x-scheme-handler\/https/d' "$MIME"
+    
     sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
     sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
-fi
-
-# 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
-echo ">>> Scheduling Smart Shutdown & Maintenance..."
-
-# A. Create the Maintenance/Shutdown Script
-cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
-#!/bin/bash
-set -u
-
-# --- CONFIG ---
-CLEANUP_DAY=2  # 2 = Tuesday
-# ----------------
-
-# 1. NOTIFY USERS (5 Minute Warning)
-MSG="School day ending. System will install updates and shut down in 5 minutes. Please save your work."
-wall "$MSG"
-LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
-if [ -n "$LOGGED_USER" ]; then
-    USER_ID=$(id -u "$LOGGED_USER")
-    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=critical --icon=system-shutdown || true
-fi
-
-# 2. WAIT 5 MINUTES
-sleep 300
-
-# 3. PREVENT SLEEP (Keep system alive for updates)
-systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
-
-    # 4. RUN SYSTEM UPDATES
-    logger "SmartShutdown: Starting system updates..."
-    export DEBIAN_FRONTEND=noninteractive
-    
-    # Update Apt
-    apt-get update -q
-    apt-get upgrade -y -q
-    apt-get autoremove -y -q
-    apt-get clean -q
-    
-    # Update Snaps (VS Code only now)
-    # FORCE KILL Apps first
-    pkill -f "code" || true
-    pkill -f "thonny" || true
-    snap refresh || true
-
-    # 5. TUESDAY CLEANUP CHECK
-    if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
-        logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
-        if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
-            /usr/local/bin/cleanup_old_users.sh
-        fi
-    fi
-'
-
-# 6. SHUTDOWN
-logger "SmartShutdown: Maintenance complete. Powering off."
-poweroff
-EOF
-chmod 750 /usr/local/bin/smart_shutdown.sh
-
-# B. Create the Schedule (Cron)
-# Mon-Thu (1-4): 16:10 Trigger -> 16:15 Shutdown
-# Fri (5):       13:25 Trigger -> 13:30 Shutdown
-cat << EOF > /etc/cron.d/school_shutdown_schedule
-# m h dom mon dow user  command
-10 16 * * 1-4 root /usr/local/bin/smart_shutdown.sh
-25 13 * * 5   root /usr/local/bin/smart_shutdown.sh
-EOF
-chmod 644 /etc/cron.d/school_shutdown_schedule
-
-# 10. FINAL POLISH
-echo ">>> Applying final polish..."
-
-# A. Disable Software Update Notifications
-cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
-APT::Periodic::Update-Package-Lists "0";
-APT::Periodic::Download-Upgradeable-Packages "0";
-APT::Periodic::AutocleanInterval "0";
-APT::Periodic::Unattended-Upgrade "0";
-EOF
-gsettings set com.ubuntu.update-notifier no-show-notifications true || true
-
-# B. Configure Epoptes Server (Check first)
-EPOPTES_FILE="/etc/default/epoptes-client"
-
-if [ -f "$EPOPTES_FILE" ]; then
-    if grep -q "^SERVER=$EPOPTES_SERVER" "$EPOPTES_FILE"; then
-        echo ">>> Epoptes already configured correctly."
-    else
-        echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
-        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
-        
-        # Try to fetch certificate if network is up
-        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
-    fi
-else
-    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
-fi
-
-# C. Set Timezone
-timedatectl set-timezone Europe/Dublin
-
-echo ">>> System Configuration Complete! Please Reboot."
+    sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-
