@@ -2,7 +2,8 @@
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#      SCHOOL LINUX SYSTEM CONFIGURATION
+#     SCHOOL LINUX SYSTEM CONFIGURATION
+#          (Ubuntu 24.04 LTS)
 # ==========================================
 
 # --- CONFIGURATION ---
@@ -11,18 +12,15 @@ ADMIN_USER_1="secsuperuser"
 ADMIN_USER_2="egallen@SEC.local"
 
 # User Groups (Space-separated lists)
-# Mock/LCCS: No Internet, Thonny Only, 7-Day Wipe
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
-
-# Exam: No Internet, Thonny Only, 7-Day Wipe, PDF on Desktop
 EXAM_USER="exam@SEC.local"
-
-# Test: No Internet, Thonny Only, Immediate Wipe, PDF on Desktop
 TEST_USER="exam1@SEC.local"
+
+# Epoptes Configuration
+EPOPTES_SERVER="epoptes.server.local"
 
 # Settings
 INACTIVE_DAYS=120
-# Direct link to the Python Reference PDF
 PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
 # ---------------------
 
@@ -35,32 +33,57 @@ fi
 echo ">>> Starting Final System Setup..."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
-echo ">>> Updating system..."
-sudo apt update && apt upgrade -y
-sudo apt autoremove -y
+echo ">>> Preparing system..."
+export DEBIAN_FRONTEND=noninteractive
 
-echo ">>> Cleaning packages..."
-# Remove 'deb' versions to prevent duplicates
-sudo apt purge "thonny*" "python3-thonny*" "code*" "gnome-initial-setup" "gnome-tour" -y || true
+# A. CLEANUP FIRST (Remove old versions/junk before installing)
+echo ">>> Purging conflicting packages..."
+# Remove Snap version of Thonny if present (it breaks libraries)
+snap remove thonny || true
+# Remove unnecessary apps
+apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
+
+# B. INSTALL SYSTEM LIBRARIES & APPS
+echo ">>> Installing System & Python Libraries..."
+apt-get update -q 
+# Installing Thonny via APT ensures it sees all these python libraries automatically.
+apt-get install -y -q \
+    thonny \
+    gnome-terminal \
+    python3-pip \
+    python3-tk \
+    python3-numpy \
+    python3-matplotlib \
+    python3-pandas \
+    python3-pygal \
+    python3-pygame
+
+# C. INSTALL CUSTOM PIP LIBRARIES
+echo ">>> Installing Custom PyPI Libraries..."
+# --break-system-packages is required on Ubuntu 24.04 to install to global python
+pip3 install firebase compscifirebase --break-system-packages
+
+# D. SYSTEM UPGRADE
+echo ">>> Upgrading System..."
+apt-get upgrade -y -q
+apt-get autoremove -y -q
+
+# E. INSTALL SNAPS (VS Code Only)
+echo ">>> Installing Snaps..."
+# VS Code Classic can see system libraries if configured, but Thonny is better via APT.
+snap install --classic code || true
 
 # Delete leftover shortcuts
-sudo rm -f /usr/share/applications/thonny.desktop
-sudo rm -f /usr/share/applications/org.thonny.Thonny.desktop
-sudo rm -f /usr/share/applications/code.desktop
-sudo rm -f /usr/share/applications/vscode.desktop
-
-echo ">>> Installing Snaps..."
-sudo snap install --classic code || true
-sudo snap install thonny || true
+rm -f /usr/share/applications/code.desktop
+rm -f /usr/share/applications/vscode.desktop
 
 # 2b. PREPARE EXAM RESOURCES
 echo ">>> Downloading Exam Resources..."
 mkdir -p /opt/sec_exam_resources
-# Download the Python Reference sheet once as root
 wget -q -O /opt/sec_exam_resources/Python_Reference.pdf "$PDF_URL" || echo "Warning: PDF Download failed. Check URL."
 chmod 644 /opt/sec_exam_resources/Python_Reference.pdf
 
-# 3. UNIVERSAL CLEANUP LOGIC (Supports Immediate & 7-Day Wipes)
+# 3. UNIVERSAL CLEANUP LOGIC
 cat << EOF > /usr/local/bin/universal_cleanup.sh
 #!/bin/bash
 TARGET_USER="\$1"
@@ -82,10 +105,8 @@ wipe_immediate() {
     fi
 }
 
-# Wipes folder ONLY if it hasn't been modified in 7 days
 wipe_if_older_than_7_days() {
     if [ -d "/home/\$TARGET_USER" ]; then
-        # Check if the home folder modification time is older than 7 days
         if [ \$(find "/home/\$TARGET_USER" -maxdepth 0 -mtime +7) ]; then
             pkill -u "\$TARGET_USER" || true
             rm -rf "/home/\$TARGET_USER"
@@ -100,17 +121,16 @@ if [ "\$ACTION" == "check_7day" ]; then wipe_if_older_than_7_days; fi
 EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
-# Create a Daily Cron Job to check the 7-day accounts
+# Cron for 7-day cleanup
 echo "#!/bin/bash" > /etc/cron.daily/sec_cleanup
 for user in $MOCK_GROUP $EXAM_USER; do
     echo "/usr/local/bin/universal_cleanup.sh $user check_7day" >> /etc/cron.daily/sec_cleanup
 done
 chmod +x /etc/cron.daily/sec_cleanup
 
-# 4. PAM MASTER CONTROLLER (Policies, Internet, Wipes, PDF)
+# 4. PAM MASTER CONTROLLER
 echo ">>> Configuring PAM hooks..."
 
-# A. Create Chrome Policy (Student Only)
 mkdir -p /usr/local/etc/chrome_policies
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
@@ -123,7 +143,6 @@ cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 }
 EOF
 
-# B. Create the Hook Script
 cat << EOF > /usr/local/bin/pam_hook.sh
 #!/bin/bash
 USER="\$PAM_USER"
@@ -133,7 +152,6 @@ TYPE="\$PAM_TYPE"
 STUDENT="$STUDENT_USER"
 EXAM="$EXAM_USER"
 TEST="$TEST_USER"
-# Combine Mock/Exam/Test into a "No Internet" list
 NO_NET_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 CHROME_MANAGED="/etc/opt/chrome/policies/managed"
@@ -142,99 +160,103 @@ POLICY_DEST="\$CHROME_MANAGED/student_policy.json"
 PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
-
 block_internet() {
-    # Block network for this specific user ID
-    # Allow Loopback (Localhost) so Apps don't crash
     iptables -A OUTPUT -o lo -j ACCEPT
     iptables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
-    # Remove the specific rule for this user
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     iptables -D OUTPUT -o lo -j ACCEPT || true
 }
 
 setup_exam_files() {
-    # Wait a moment for home dir creation
     sleep 2
     DESKTOP="/home/\$USER/Desktop"
     mkdir -p "\$DESKTOP"
     if [ -f "\$PDF_SOURCE" ]; then
         cp "\$PDF_SOURCE" "\$DESKTOP/"
         chown "\$USER":"\$USER" "\$DESKTOP/Python_Reference.pdf"
-        chmod 444 "\$DESKTOP/Python_Reference.pdf" # Read-only
+        chmod 444 "\$DESKTOP/Python_Reference.pdf" 
     fi
 }
 
 # --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
-    
-    # 1. STUDENT
     if [ "\$USER" == "\$STUDENT" ]; then
         mkdir -p "\$CHROME_MANAGED"
         ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
-        logger "SEC_SCRIPT: Applied Chrome Policy for \$USER"  # <--- NEW LOG
     else
         rm -f "\$POLICY_DEST"
     fi
 
-    # 2. NO INTERNET
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         block_internet
-        logger "SEC_SCRIPT: Blocked Internet for \$USER"      # <--- NEW LOG
     fi
 
-    # 3. EXAM FILES
     if [ "\$USER" == "\$EXAM" ] || [ "\$USER" == "\$TEST" ]; then
         setup_exam_files &
-        logger "SEC_SCRIPT: Deployed Exam PDF for \$USER"     # <--- NEW LOG
     fi
 fi
 
 # --- LOGOUT LOGIC ---
 if [ "\$TYPE" == "close_session" ]; then
-    
-    # 1. Clean Chrome Locks (Everyone)
     /usr/local/bin/universal_cleanup.sh "\$USER" chrome
 
-    # 2. Unblock Internet (Clean up iptables)
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         unblock_internet
     fi
 
-    # 3. IMMEDIATE WIPE (Student & Test ONLY)
     if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
         /usr/local/bin/universal_cleanup.sh "\$USER" wipe
     fi
-    
-    # Note: Mock & Exam are NOT wiped here. They wait for the 7-day Cron job.
 fi
 EOF
 chmod +x /usr/local/bin/pam_hook.sh
 
-# C. Register PAM
 if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
 
-# 5. SYSTEMD BOOT CLEANUP (Safety net for crashes + Epoptes Fix)
+# 5. INACTIVE USER CLEANUP TOOL
+cat << EOF > /usr/local/bin/cleanup_old_users.sh
+#!/bin/bash
+set -euo pipefail
+UID_MIN=1000
+lastlog -b "$INACTIVE_DAYS" | awk 'NR>1 {print \$1}' | while read -r U; do
+    [[ -z "\$U" ]] && continue
+    USER_UID=\$(id -u "\$U" 2>/dev/null || echo 0)
+    if [[ "\$USER_UID" -lt "\$UID_MIN" || "\$U" == "root" || "\$U" == "$ADMIN_USER_1" || "\$U" == "$ADMIN_USER_2" ]]; then
+        continue
+    fi
+    logger "Inactive Cleanup: Removing account for \$U"
+    pkill -u "\$U" || true
+    userdel -r -f "\$U"
+    logger "Inactive Cleanup: User \$U deleted successfully."
+done
+EOF
+chmod 750 /usr/local/bin/cleanup_old_users.sh
+
+# 6. SYSTEMD BOOT CLEANUP (SAFETY NET)
 cat << EOF > /etc/systemd/system/cleanup-boot.service
 [Unit]
-Description=Safety Cleanup (Chrome, Student, Epoptes)
+Description=Safety Cleanup (Chrome, Student, Epoptes, Inactive)
 After=network.target
 
 [Service]
 Type=oneshot
 User=root
-# Wipe student if exists
+# 1. Wipe student if exists
 ExecStart=/bin/bash -c 'if [ -d "/home/$STUDENT_USER" ]; then rm -rf "/home/$STUDENT_USER"; fi'
-# Clean Chrome locks globally
+# 2. Clean Chrome locks
 ExecStart=/bin/bash -c 'find /home -maxdepth 2 -name "SingletonLock" -delete'
-# Clean Stale Epoptes PID
+# 3. Clean Epoptes PID
 ExecStart=/bin/bash -c 'rm -f /var/run/epoptes-client.pid'
+# 4. AUTO-HEAL: Fetch Epoptes Cert if missing
+ExecStart=/bin/bash -c 'if [ ! -f /etc/epoptes/server.crt ]; then epoptes-client -c || true; fi'
+# 5. CRITICAL: Run Inactive User Cleanup (Failsafe)
+ExecStart=/usr/local/bin/cleanup_old_users.sh
 ExecStartPost=/usr/bin/logger "Systemd: Boot cleanup complete"
 
 [Install]
@@ -244,65 +266,38 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-# 6. UI ENFORCEMENT (Themes, Restrictions, Icons)
-echo ">>> generating UI Enforcer script..."
-
+# 7. UI ENFORCEMENT
+echo ">>> Generating UI Enforcer script..."
+# Detect VS Code Desktop file (Snap vs Apt naming)
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
-if [ -f "/var/lib/snapd/desktop/applications/thonny_thonny.desktop" ]; then THONNY="thonny_thonny.desktop"; else THONNY="thonny.desktop"; fi
+# We use the APT Thonny ID now
+THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
+if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# --- 1. ADMIN PROTECTION ---
-if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
-    exit 0
-fi
-
-# --- 2. DEFINE GROUPS ---
 RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
-
 sleep 3
-
-# --- 3. COMMON SETTINGS ---
-# Mute Audio
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
-# No Sleep / Performance
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
-# Block Printing
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
-# --- 4. CONDITIONAL UI ---
-
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
-    # === RESTRICTED MODE (Mock/Exam/Test) ===
-    
-    # Visuals: Default Blue/Orange
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
-    gsettings set org.gnome.desktop.interface color-scheme 'default'
-
-    # Dock: THONNY + FILES ONLY
     gsettings set org.gnome.shell favorite-apps "['org.gnome.Nautilus.desktop', '$THONNY']"
-    
-    # Extra Lockdown: Disable Command Prompt (Alt+F2)
     gsettings set org.gnome.desktop.lockdown disable-command-line true
-    
 else
-    # === STUDENT MODE ===
-    
-    # Visuals: Purple (Force Yaru-purple theme)
+    # STUDENT MODE: Added Terminal to the dock
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
-    gsettings set org.gnome.desktop.interface color-scheme 'default'
-    
-    # Dock: Chrome + Code + Thonny + Files
-    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
+    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
 fi
 
-# --- 5. DOCK STYLE (Bottom) ---
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
@@ -310,14 +305,10 @@ for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensi
     gsettings set \$schema dash-max-icon-size 54
     gsettings set \$schema dock-fixed false
 done
-
-# --- 6. CLEANUP ---
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
-
 chmod +x /usr/local/bin/force_ui.sh
 
-# Create Autostart Entry
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
 Type=Application
@@ -328,47 +319,8 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
 
-# 7. INACTIVE USER CLEANUP (Maintenance)
-cat << EOF > /usr/local/bin/cleanup_old_users.sh
-#!/bin/bash
-set -euo pipefail
-
-# Define threshold for system UIDs (usually 1000 on standard Linux distros)
-UID_MIN=1000
-
-lastlog -b "$INACTIVE_DAYS" | awk 'NR>1 {print \$1}' | while read -r U; do
-    
-    # 1. Skip if user is empty
-    [[ -z "\$U" ]] && continue
-
-    # 2. Safety Check: Get UID to ensure we don't delete system services
-    USER_UID=\$(id -u "\$U" 2>/dev/null || echo 0)
-    
-    # 3. Exclusions: Root, Admins, or System Accounts
-    if [[ "\$USER_UID" -lt "\$UID_MIN" || "\$U" == "root" || "\$U" == "$ADMIN_USER_1" || "\$U" == "$ADMIN_USER_2" ]]; then
-        continue
-    fi
-
-    # 4. Perform Cleanup
-    logger "Inactive Cleanup: Removing account for \$U"
-    
-    # Kill processes
-    pkill -u "\$U" || true
-    
-    # Delete the user AND their home directory/mail spool
-    # -r removes the home directory and mail spool
-    # -f forces removal even if user is logged in (redundant with pkill but safer)
-    userdel -r -f "\$U"
-
-    logger "Inactive Cleanup: User \$U deleted successfully."
-done
-EOF
-chmod 750 /usr/local/bin/cleanup_old_users.sh
-
-# 8. MISC FIXES
+# 8. MISC FIXES (INCLUDES SINGLE USER ENFORCEMENT)
 echo ">>> Applying final fixes..."
-
-# Epoptes Keepalive (Fixes Black Screens)
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_intvl = 10
@@ -376,20 +328,14 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# Disable Fast User Switching (Prevents logic conflicts)
-cat << EOF > /etc/dconf/profile/user
-user-db:user
-system-db:local
-EOF
-
+# Disable Fast User Switching (Enforces Single User)
+mkdir -p /etc/dconf/profile
+echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
 mkdir -p /etc/dconf/db/local.d
-cat << EOF > /etc/dconf/db/local.d/00-disable-switching
-[org/gnome/desktop/lockdown]
-disable-user-switching=true
-EOF
+echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
 dconf update
 
-# Hide VNC & Terminal Icons
+# Hide VNC & Terminal Icons (Optional: We un-hid Terminal in dock, but hide the icon in menu if desired)
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
@@ -400,11 +346,114 @@ done
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# File Associations (VS Code for CSV/TXT)
+# File Associations
 MIME="/usr/share/applications/mimeapps.list"
 if [ -f "$MIME" ]; then
     grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
     sed -i '/text\/csv/d' "$MIME"
     sed -i '/text\/plain/d' "$MIME"
     sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$
+    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
+fi
+
+# 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
+echo ">>> Scheduling Smart Shutdown & Maintenance..."
+
+# A. Create the Maintenance/Shutdown Script
+cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
+#!/bin/bash
+set -u
+
+# --- CONFIG ---
+CLEANUP_DAY=2  # 2 = Tuesday
+# ----------------
+
+# 1. NOTIFY USERS (5 Minute Warning)
+MSG="School day ending. System will install updates and shut down in 5 minutes. Please save your work."
+wall "$MSG"
+LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
+if [ -n "$LOGGED_USER" ]; then
+    USER_ID=$(id -u "$LOGGED_USER")
+    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=critical --icon=system-shutdown || true
+fi
+
+# 2. WAIT 5 MINUTES
+sleep 300
+
+# 3. PREVENT SLEEP (Keep system alive for updates)
+systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
+
+    # 4. RUN SYSTEM UPDATES
+    logger "SmartShutdown: Starting system updates..."
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Update Apt
+    apt-get update -q
+    apt-get upgrade -y -q
+    apt-get autoremove -y -q
+    apt-get clean -q
+    
+    # Update Snaps (VS Code only now)
+    # FORCE KILL Apps first
+    pkill -f "code" || true
+    pkill -f "thonny" || true
+    snap refresh || true
+
+    # 5. TUESDAY CLEANUP CHECK
+    if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
+        logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
+        if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
+            /usr/local/bin/cleanup_old_users.sh
+        fi
+    fi
+'
+
+# 6. SHUTDOWN
+logger "SmartShutdown: Maintenance complete. Powering off."
+poweroff
+EOF
+chmod 750 /usr/local/bin/smart_shutdown.sh
+
+# B. Create the Schedule (Cron)
+# Mon-Thu (1-4): 16:10 Trigger -> 16:15 Shutdown
+# Fri (5):       13:25 Trigger -> 13:30 Shutdown
+cat << EOF > /etc/cron.d/school_shutdown_schedule
+# m h dom mon dow user  command
+10 16 * * 1-4 root /usr/local/bin/smart_shutdown.sh
+25 13 * * 5   root /usr/local/bin/smart_shutdown.sh
+EOF
+chmod 644 /etc/cron.d/school_shutdown_schedule
+
+# 10. FINAL POLISH
+echo ">>> Applying final polish..."
+
+# A. Disable Software Update Notifications
+cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::AutocleanInterval "0";
+APT::Periodic::Unattended-Upgrade "0";
+EOF
+gsettings set com.ubuntu.update-notifier no-show-notifications true || true
+
+# B. Configure Epoptes Server (Check first)
+EPOPTES_FILE="/etc/default/epoptes-client"
+
+if [ -f "$EPOPTES_FILE" ]; then
+    if grep -q "^SERVER=$EPOPTES_SERVER" "$EPOPTES_FILE"; then
+        echo ">>> Epoptes already configured correctly."
+    else
+        echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
+        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
+        
+        # Try to fetch certificate if network is up
+        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
+    fi
+else
+    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
+fi
+
+# C. Set Timezone
+timedatectl set-timezone Europe/Dublin
+
+echo ">>> System Configuration Complete! Please Reboot."
