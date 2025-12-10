@@ -223,6 +223,33 @@ for app in "${APPS[@]}"; do
     [ -f "$FILE" ] && echo "NoDisplay=true" >> "$FILE"
 done
 
+# 9. CHROME POLICY (Bypass Popups & Force Google)
+echo ">>> Configuring Chrome Enterprise Policies..."
+
+# Create the directory for managed policies
+mkdir -p /etc/opt/chrome/policies/managed
+
+# Write the policy file.
+# This forces Google as the default and disables the "Welcome" and "First Run" screens.
+cat << EOF > /etc/opt/chrome/policies/managed/student_policy.json
+{
+  "DefaultSearchProviderEnabled": true,
+  "DefaultSearchProviderName": "Google",
+  "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
+  "DefaultSearchProviderSuggestURL": "https://www.google.com/complete/search?output=chrome&q={searchTerms}",
+  "DefaultSearchProviderIconURL": "https://www.google.com/favicon.ico",
+  "ShowFirstRunExperience": false,
+  "PromotionalTabsEnabled": false,
+  "MetricsReportingEnabled": false,
+  "BrowserSignin": 0
+}
+EOF
+
+# Ensure the file is readable by all users
+chmod 644 /etc/opt/chrome/policies/managed/student_policy.json
+
+echo ">>> Chrome Policies applied."
+
 # Microbit Rules
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
