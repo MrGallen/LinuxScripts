@@ -1,11 +1,29 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# ==========================================
+#      SCHOOL LINUX SYSTEM CONFIGURATION
+# ==========================================
+
 # --- CONFIGURATION ---
 STUDENT_USER="student@SEC.local"
 ADMIN_USER_1="secsuperuser"
 ADMIN_USER_2="egallen@SEC.local"
+
+# User Groups (Space-separated lists)
+# Mock/LCCS: No Internet, Thonny Only, 7-Day Wipe
+MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
+
+# Exam: No Internet, Thonny Only, 7-Day Wipe, PDF on Desktop
+EXAM_USER="exam@SEC.local"
+
+# Test: No Internet, Thonny Only, Immediate Wipe, PDF on Desktop
+TEST_USER="exam1@SEC.local"
+
+# Settings
 INACTIVE_DAYS=120
+# Direct link to the Python Reference PDF
+PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
 # ---------------------
 
 # 1. ROOT CHECK
@@ -22,56 +40,77 @@ sudo apt update && apt upgrade -y
 sudo apt autoremove -y
 
 echo ">>> Cleaning packages..."
-# Aggressively remove 'deb' versions to prevent duplicates
+# Remove 'deb' versions to prevent duplicates
 sudo apt purge "thonny*" "python3-thonny*" "code*" "gnome-initial-setup" "gnome-tour" -y || true
 
-# Delete leftover shortcuts to avoid "Ghost Icons"
+# Delete leftover shortcuts
 sudo rm -f /usr/share/applications/thonny.desktop
 sudo rm -f /usr/share/applications/org.thonny.Thonny.desktop
 sudo rm -f /usr/share/applications/code.desktop
 sudo rm -f /usr/share/applications/vscode.desktop
 
 echo ">>> Installing Snaps..."
-# '|| true' ensures script continues if already installed
 sudo snap install --classic code || true
 sudo snap install thonny || true
 
-# 3. UNIVERSAL CLEANUP LOGIC (Used by Boot & Logout)
+# 2b. PREPARE EXAM RESOURCES
+echo ">>> Downloading Exam Resources..."
+mkdir -p /opt/sec_exam_resources
+# Download the Python Reference sheet once as root
+wget -q -O /opt/sec_exam_resources/Python_Reference.pdf "$PDF_URL" || echo "Warning: PDF Download failed. Check URL."
+chmod 644 /opt/sec_exam_resources/Python_Reference.pdf
+
+# 3. UNIVERSAL CLEANUP LOGIC (Supports Immediate & 7-Day Wipes)
 cat << EOF > /usr/local/bin/universal_cleanup.sh
 #!/bin/bash
 TARGET_USER="\$1"
-ACTION="\$2" # 'chrome' or 'wipe'
+ACTION="\$2" 
 
 clean_chrome() {
     CHROME_DIR="/home/\$TARGET_USER/.config/google-chrome"
     if [ -d "\$CHROME_DIR" ]; then
-        rm -f "\$CHROME_DIR/SingletonLock"
-        rm -f "\$CHROME_DIR/SingletonSocket"
-        rm -f "\$CHROME_DIR/SingletonCookie"
-        logger "CLEANUP: Removed Chrome locks for \$TARGET_USER"
+        rm -f "\$CHROME_DIR/SingletonLock" "\$CHROME_DIR/SingletonSocket" "\$CHROME_DIR/SingletonCookie"
     fi
 }
 
-wipe_user() {
+wipe_immediate() {
     if [ -d "/home/\$TARGET_USER" ]; then
         pkill -u "\$TARGET_USER" || true
         sleep 1
         rm -rf "/home/\$TARGET_USER"
-        logger "CLEANUP: Wiped home directory for \$TARGET_USER"
+        logger "CLEANUP: Immediate wipe for \$TARGET_USER"
+    fi
+}
+
+# Wipes folder ONLY if it hasn't been modified in 7 days
+wipe_if_older_than_7_days() {
+    if [ -d "/home/\$TARGET_USER" ]; then
+        # Check if the home folder modification time is older than 7 days
+        if [ \$(find "/home/\$TARGET_USER" -maxdepth 0 -mtime +7) ]; then
+            pkill -u "\$TARGET_USER" || true
+            rm -rf "/home/\$TARGET_USER"
+            logger "CLEANUP: 7-Day limit reached. Wiped \$TARGET_USER"
+        fi
     fi
 }
 
 if [ "\$ACTION" == "chrome" ]; then clean_chrome; fi
-if [ "\$ACTION" == "wipe" ]; then wipe_user; fi
+if [ "\$ACTION" == "wipe" ]; then wipe_immediate; fi
+if [ "\$ACTION" == "check_7day" ]; then wipe_if_older_than_7_days; fi
 EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
-# 4. PAM LOGIN/LOGOUT TRIGGER
-# This handles Cleanup on Logout AND Chrome Policy toggling on Login.
+# Create a Daily Cron Job to check the 7-day accounts
+echo "#!/bin/bash" > /etc/cron.daily/sec_cleanup
+for user in $MOCK_GROUP $EXAM_USER; do
+    echo "/usr/local/bin/universal_cleanup.sh $user check_7day" >> /etc/cron.daily/sec_cleanup
+done
+chmod +x /etc/cron.daily/sec_cleanup
 
+# 4. PAM MASTER CONTROLLER (Policies, Internet, Wipes, PDF)
 echo ">>> Configuring PAM hooks..."
 
-# A. Create the "Gold Master" Policy file (Hidden in a safe place)
+# A. Create Chrome Policy (Student Only)
 mkdir -p /usr/local/etc/chrome_policies
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
@@ -88,50 +127,93 @@ EOF
 cat << EOF > /usr/local/bin/pam_hook.sh
 #!/bin/bash
 USER="\$PAM_USER"
-TYPE="\$PAM_TYPE" # 'open_session' or 'close_session'
+TYPE="\$PAM_TYPE"
+
+# --- USER DEFINITIONS ---
+STUDENT="$STUDENT_USER"
+EXAM="$EXAM_USER"
+TEST="$TEST_USER"
+# Combine Mock/Exam/Test into a "No Internet" list
+NO_NET_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 CHROME_MANAGED="/etc/opt/chrome/policies/managed"
 POLICY_SOURCE="/usr/local/etc/chrome_policies/student_policy.json"
 POLICY_DEST="\$CHROME_MANAGED/student_policy.json"
+PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
-# Function to Apply Policy (Student Only)
-apply_policy() {
-    mkdir -p "\$CHROME_MANAGED"
-    # Link the policy file so it is active
-    ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
+# --- FUNCTIONS ---
+
+block_internet() {
+    # Block network for this specific user ID
+    # Allow Loopback (Localhost) so Apps don't crash
+    iptables -A OUTPUT -o lo -j ACCEPT
+    iptables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
 }
 
-# Function to Remove Policy (Admins)
-remove_policy() {
-    # Remove the link so Chrome is normal
-    rm -f "\$POLICY_DEST"
+unblock_internet() {
+    # Remove the specific rule for this user
+    iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
+    iptables -D OUTPUT -o lo -j ACCEPT || true
+}
+
+setup_exam_files() {
+    # Wait a moment for home dir creation
+    sleep 2
+    DESKTOP="/home/\$USER/Desktop"
+    mkdir -p "\$DESKTOP"
+    if [ -f "\$PDF_SOURCE" ]; then
+        cp "\$PDF_SOURCE" "\$DESKTOP/"
+        chown "\$USER":"\$USER" "\$DESKTOP/Python_Reference.pdf"
+        chmod 444 "\$DESKTOP/Python_Reference.pdf" # Read-only
+    fi
 }
 
 # --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
-    if [ "\$USER" == "$STUDENT_USER" ]; then
-        apply_policy
+    
+    # 1. STUDENT: Give Chrome Policy (Bypass Popups)
+    if [ "\$USER" == "\$STUDENT" ]; then
+        mkdir -p "\$CHROME_MANAGED"
+        ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
     else
-        # If Admin logs in, ensure they don't have the student restrictions
-        remove_policy
+        # Ensure Admins/others don't get the Student policy
+        rm -f "\$POLICY_DEST"
+    fi
+
+    # 2. NO INTERNET GROUPS (Mock, Exam, Test, LCCS...)
+    if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
+        block_internet
+    fi
+
+    # 3. EXAM / TEST FILES (Copy PDF)
+    if [ "\$USER" == "\$EXAM" ] || [ "\$USER" == "\$TEST" ]; then
+        setup_exam_files &
     fi
 fi
 
 # --- LOGOUT LOGIC ---
 if [ "\$TYPE" == "close_session" ]; then
-    # Always clean Chrome locks for everyone to prevent crashes
-    /usr/local/bin/universal_cleanup.sh "\$USER" chrome
     
-    # If Student logs out, wipe their data and remove policy
-    if [ "\$USER" == "$STUDENT_USER" ]; then
-        remove_policy
+    # 1. Clean Chrome Locks (Everyone)
+    /usr/local/bin/universal_cleanup.sh "\$USER" chrome
+
+    # 2. Unblock Internet (Clean up iptables)
+    if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
+        unblock_internet
+    fi
+
+    # 3. IMMEDIATE WIPE (Student & Test ONLY)
+    if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
+        rm -f "\$POLICY_DEST"
         /usr/local/bin/universal_cleanup.sh "\$USER" wipe
     fi
+    
+    # Note: Mock & Exam are NOT wiped here. They wait for the 7-day Cron job.
 fi
 EOF
 chmod +x /usr/local/bin/pam_hook.sh
 
-# C. Register it in PAM (If not already there)
+# C. Register PAM
 if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
@@ -149,7 +231,7 @@ User=root
 ExecStart=/bin/bash -c 'if [ -d "/home/$STUDENT_USER" ]; then rm -rf "/home/$STUDENT_USER"; fi'
 # Clean Chrome locks globally
 ExecStart=/bin/bash -c 'find /home -maxdepth 2 -name "SingletonLock" -delete'
-# Clean Stale Epoptes PID (Fixes "Service already running" error)
+# Clean Stale Epoptes PID
 ExecStart=/bin/bash -c 'rm -f /var/run/epoptes-client.pid'
 ExecStartPost=/usr/bin/logger "Systemd: Boot cleanup complete"
 
@@ -160,7 +242,7 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-# 6. UI ENFORCEMENT (The "Brute Force" Script)
+# 6. UI ENFORCEMENT (Themes, Restrictions, Icons)
 echo ">>> generating UI Enforcer script..."
 
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
@@ -174,49 +256,51 @@ if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
     exit 0
 fi
 
-# --- 2. WAIT FOR DESKTOP ---
+# --- 2. DEFINE GROUPS ---
+RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
+
 sleep 3
 
-# --- 3. AUDIO (MUTE) ---
+# --- 3. COMMON SETTINGS ---
+# Mute Audio
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
-
-# --- 4. VISUALS (THE ULTIMATE PURPLE FIX) ---
-# We set this 3 different ways to ensure it sticks on all Ubuntu versions.
-
-# Method A: Modern Accent Color (Ubuntu 22.10+)
-gsettings set org.gnome.desktop.interface accent-color 'purple' || true
-
-# Method B: The "Yaru" Theme Overrides (Ubuntu 20.04 - 22.04)
-# This forces the GTK theme to use the purple assets explicitly.
-gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
-gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
-gsettings set org.gnome.desktop.interface cursor-theme 'Yaru'
-
-# Method C: Color Scheme
-gsettings set org.gnome.desktop.interface color-scheme 'default'
-gsettings set org.gnome.desktop.interface gtk-color-scheme 'default'
-
-# --- 5. INTERFACE BEHAVIOR ---
-gsettings set org.gnome.desktop.interface enable-hot-corners true
-gsettings set org.gnome.mutter edge-tiling true
-gsettings set org.gnome.desktop.interface clock-show-seconds true
-gsettings set org.gnome.desktop.interface clock-show-weekday true
-gsettings set org.gnome.desktop.interface show-battery-percentage true
-
-# --- 6. POWER (ALWAYS ON) ---
+# No Sleep / Performance
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
-gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
-gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
-gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
-gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
 gsettings set org.gnome.desktop.session idle-delay 0
-
-# --- 7. RESTRICTIONS (PRINTERS) ---
+# Block Printing
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
-# --- 8. DOCK & ICONS ---
+# --- 4. CONDITIONAL UI ---
+
+if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
+    # === RESTRICTED MODE (Mock/Exam/Test) ===
+    
+    # Visuals: Default Blue/Orange
+    gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
+    gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
+    gsettings set org.gnome.desktop.interface color-scheme 'default'
+
+    # Dock: THONNY + FILES ONLY
+    gsettings set org.gnome.shell favorite-apps "['org.gnome.Nautilus.desktop', '$THONNY']"
+    
+    # Extra Lockdown: Disable Command Prompt (Alt+F2)
+    gsettings set org.gnome.desktop.lockdown disable-command-line true
+    
+else
+    # === STUDENT MODE ===
+    
+    # Visuals: Purple (Force Yaru-purple theme)
+    gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
+    gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
+    gsettings set org.gnome.desktop.interface color-scheme 'default'
+    
+    # Dock: Chrome + Code + Thonny + Files
+    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
+fi
+
+# --- 5. DOCK STYLE (Bottom) ---
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
@@ -225,9 +309,7 @@ for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensi
     gsettings set \$schema dock-fixed false
 done
 
-gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
-
-# --- 9. CLEANUP ---
+# --- 6. CLEANUP ---
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
 
@@ -237,7 +319,7 @@ chmod +x /usr/local/bin/force_ui.sh
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
 Type=Application
-Name=Force Student UI
+Name=Force UI
 Exec=/usr/local/bin/force_ui.sh
 Hidden=false
 NoDisplay=false
@@ -288,10 +370,4 @@ if [ -f "$MIME" ]; then
     sed -i '/text\/csv/d' "$MIME"
     sed -i '/text\/plain/d' "$MIME"
     sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
-fi
-
-# Reset Student Profile to force new script
-rm -f /home/$STUDENT_USER/.config/dconf/user
-
-echo ">>> Setup Complete! Rebooting is highly recommended."
+    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$
