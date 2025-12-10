@@ -116,7 +116,6 @@ cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
 
 # --- 1. ADMIN PROTECTION ---
-# If Admin logs in, EXIT immediately. Do not touch settings.
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
     exit 0
 fi
@@ -125,16 +124,17 @@ fi
 sleep 3
 
 # --- 3. AUDIO (MUTE ON LOGIN) ---
-# Try multiple methods to ensure sound is muted
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
-amixer -q -D pulse sset Master mute > /dev/null 2>&1 || true
 
-# --- 4. VISUALS & BEHAVIOR ---
-# Purple Accent / Default Mode
-gsettings set org.gnome.desktop.interface accent-color 'purple'
+# --- 4. VISUALS (FIXED PURPLE ACCENT) ---
+# On Ubuntu, "Accent Color" is actually a specific Theme Name.
+# We must set both the Interface (Windows) and Icons to 'Yaru-purple'.
+
+gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
+gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
 gsettings set org.gnome.desktop.interface color-scheme 'default'
 
-# Hot Corner (Top-Left) & Active Screen Edges (Tiling)
+# Hot Corner (Top-Left) & Active Screen Edges
 gsettings set org.gnome.desktop.interface enable-hot-corners true
 gsettings set org.gnome.mutter edge-tiling true
 
@@ -144,7 +144,6 @@ gsettings set org.gnome.desktop.interface clock-show-weekday true
 gsettings set org.gnome.desktop.interface show-battery-percentage true
 
 # --- 5. POWER & PERFORMANCE ---
-# Force Performance Mode (if hardware supports it)
 powerprofilesctl set performance || true
 
 # NO SLEEP / NO BLANK / NO SUSPEND
@@ -157,7 +156,6 @@ gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-tim
 gsettings set org.gnome.desktop.session idle-delay 0
 
 # --- 6. RESTRICTIONS (PRINTERS) ---
-# Lock down printing for Students only (Admins bypassed above)
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
@@ -179,7 +177,7 @@ EOF
 
 chmod +x /usr/local/bin/force_ui.sh
 
-# Create Autostart Entry (Runs for EVERY user)
+# Create Autostart Entry
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
 Type=Application
