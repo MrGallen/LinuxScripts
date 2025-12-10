@@ -124,40 +124,56 @@ fi
 # --- 2. WAIT FOR DESKTOP ---
 sleep 3
 
-# --- 3. VISUALS & BEHAVIOR ---
-# Purple Accent / Light Mode
-gsettings set org.gnome.desktop.interface accent-color 'purple'
-gsettings set org.gnome.desktop.interface color-scheme 'prefer-light'
+# --- 3. AUDIO (MUTE ON LOGIN) ---
+# Try multiple methods to ensure sound is muted
+pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+amixer -q -D pulse sset Master mute > /dev/null 2>&1 || true
 
-# Hot Corner (Top-Left)
+# --- 4. VISUALS & BEHAVIOR ---
+# Purple Accent / Default Mode
+gsettings set org.gnome.desktop.interface accent-color 'purple'
+gsettings set org.gnome.desktop.interface color-scheme 'default'
+
+# Hot Corner (Top-Left) & Active Screen Edges (Tiling)
 gsettings set org.gnome.desktop.interface enable-hot-corners true
+gsettings set org.gnome.mutter edge-tiling true
 
 # Clock & Battery
 gsettings set org.gnome.desktop.interface clock-show-seconds true
 gsettings set org.gnome.desktop.interface clock-show-weekday true
 gsettings set org.gnome.desktop.interface show-battery-percentage true
 
-# --- 4. POWER (NO SLEEP) ---
+# --- 5. POWER & PERFORMANCE ---
+# Force Performance Mode (if hardware supports it)
+powerprofilesctl set performance || true
+
+# NO SLEEP / NO BLANK / NO SUSPEND
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
 gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
+gsettings set org.gnome.settings-daemon.plugins.power power-saver-profile-on-low-battery false
 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
 gsettings set org.gnome.desktop.session idle-delay 0
 
-# --- 5. DOCK SETTINGS (Apply to both Standard & Ubuntu Docks) ---
+# --- 6. RESTRICTIONS (PRINTERS) ---
+# Lock down printing for Students only (Admins bypassed above)
+gsettings set org.gnome.desktop.lockdown disable-printing true
+gsettings set org.gnome.desktop.lockdown disable-print-setup true
+
+# --- 7. DOCK SETTINGS ---
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
-    gsettings set \$schema extend-height false   # Panel Mode Disabled (Floating)
+    gsettings set \$schema extend-height false
     gsettings set \$schema dash-max-icon-size 54
     gsettings set \$schema dock-fixed false
 done
 
-# --- 6. ICONS ---
+# --- 8. ICONS ---
 gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', '$CODE', '$THONNY']"
 
-# --- 7. CLEANUP ---
+# --- 9. CLEANUP ---
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
 
