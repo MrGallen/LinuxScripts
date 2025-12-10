@@ -25,7 +25,7 @@ EPOPTES_SERVER="epoptes.server.local"
 
 # 4. SETTINGS
 INACTIVE_DAYS=120
-PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
+PDF_URL="https://www.examinations.ie/docs/viewer.php?q=e5c7ee46cecf19bc20023e32f0664b6b6a152c15" 
 # ---------------------
 
 # 1. ROOT CHECK
