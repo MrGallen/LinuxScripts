@@ -17,7 +17,7 @@ WIFI_SSID="Admin"
 WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
-# Space-separated list of accounts. This works perfectly for multiple mock users.
+# Space-separated list of accounts.
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
@@ -25,7 +25,7 @@ EPOPTES_SERVER="epoptes.server.local"
 
 # 4. SETTINGS
 INACTIVE_DAYS=120
-PDF_URL="https://www.examinations.ie/archive/exampapers/2022/LC219ALP000EV.pdf" 
+PDF_URL="https://www.examinations.ie/docs/viewer.php?q=e5c7ee46cecf19bc20023e32f0664b6b6a152c15" 
 # ---------------------
 
 # 1. ROOT CHECK
@@ -36,13 +36,17 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
-# 1.5 CONNECT TO WI-FI (Fixed Logic)
+# 1.5 CONNECT TO WI-FI (Aggressive Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
+# 1. Turn radio ON
 nmcli radio wifi on
-# Delete any existing profile with this name to prevent conflicts
+# 2. Delete any old/corrupt profile with this name
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
-# Connect with a 15-second timeout to avoid hanging forever
-nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal."
+# 3. Rescan to find the network
+nmcli device wifi rescan || true
+sleep 3
+# 4. Connect
+nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Preparing system..."
@@ -317,17 +321,28 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
-    # 3. DISABLE RUN COMMAND
+    # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
+    # This prevents users from clicking the button to see other apps
+    for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
+        gsettings set \$schema show-show-apps-button false
+    done
+
+    # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
     # === STUDENT MODE ===
-    # Reset Super Key for normal students
+    # Reset Super Key & App Grid for normal students
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
     
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
+    
+    # Ensure Apps Button is VISIBLE for students
+    for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
+        gsettings set \$schema show-show-apps-button true
+    done
 fi
 
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
@@ -480,18 +495,4 @@ if [ -f "$EPOPTES_FILE" ]; then
         echo ">>> Epoptes already configured correctly."
     else
         echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
-        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
-        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
-    fi
-else
-    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
-fi
-
-# C. Set Timezone
-timedatectl set-timezone Europe/Dublin
-
-# D. SELF DESTRUCT (Security)
-echo ">>> CONFIGURATION COMPLETE."
-echo ">>> Deleting this script file to protect Wi-Fi passwords..."
-rm -- "$0"
-echo ">>> Script deleted. Please Reboot."
+        sed -i -E "s/^#?SERVER=.*/SERVER=$EPO
