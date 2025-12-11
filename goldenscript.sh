@@ -496,18 +496,4 @@ if [ -f "$EPOPTES_FILE" ]; then
         echo ">>> Epoptes already configured correctly."
     else
         echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
-        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
-        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
-    fi
-else
-    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
-fi
-
-# C. Set Timezone
-timedatectl set-timezone Europe/Dublin
-
-# D. SELF DESTRUCT (Security)
-echo ">>> CONFIGURATION COMPLETE."
-echo ">>> Deleting this script file to protect Wi-Fi passwords..."
-rm -- "$0"
-echo ">>> Script deleted. Please Reboot."
+        sed -i -E "s/^#?SERVER=.*/SERVER=$EPO
