@@ -66,6 +66,7 @@ apt-get install -y -q \
     python3-matplotlib \
     python3-pandas \
     python3-pygal \
+    python3-pygame
 
 # C. INSTALL CUSTOM PIP LIBRARIES
 echo ">>> Installing Custom PyPI Libraries..."
