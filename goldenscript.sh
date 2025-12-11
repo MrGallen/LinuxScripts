@@ -38,14 +38,10 @@ echo ">>> Starting Final System Setup..."
 
 # 1.5 CONNECT TO WI-FI (Aggressive Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
-# 1. Turn radio ON
 nmcli radio wifi on
-# 2. Delete any old/corrupt profile with this name
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
-# 3. Rescan to find the network
 nmcli device wifi rescan || true
 sleep 3
-# 4. Connect
 nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
@@ -137,10 +133,11 @@ for user in $MOCK_GROUP $EXAM_USER; do
 done
 chmod +x /etc/cron.daily/sec_cleanup
 
-# 4. PAM MASTER CONTROLLER
+# 4. PAM MASTER CONTROLLER (UPDATED: Covers all non-admins)
 echo ">>> Configuring PAM hooks..."
 
 mkdir -p /usr/local/etc/chrome_policies
+# Added PrintingEnabled: false to block printing in Chrome
 cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
 {
   "DefaultSearchProviderEnabled": true,
@@ -152,7 +149,8 @@ cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
   "DefaultBrowserSettingEnabled": false,
   "MetricsReportingEnabled": false,
   "SyncDisabled": true,
-  "PasswordManagerEnabled": false
+  "PasswordManagerEnabled": false,
+  "PrintingEnabled": false
 }
 EOF
 
@@ -162,7 +160,7 @@ USER="\$PAM_USER"
 TYPE="\$PAM_TYPE"
 
 # --- USER DEFINITIONS ---
-STUDENT="$STUDENT_USER"
+ADMINS="$ADMIN_USER_1 $ADMIN_USER_2"
 EXAM="$EXAM_USER"
 TEST="$TEST_USER"
 NO_NET_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
@@ -174,23 +172,15 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps)
     iptables -I OUTPUT 1 -o lo -j ACCEPT
-    
-    # 2. ALLOW Local Network (Epoptes needs this!)
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
-
-    # 3. BLOCK Everything Else for this User
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
-    
-    # 4. BLOCK IPv6 as well (To be safe)
     ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
-    # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
 }
@@ -208,18 +198,23 @@ setup_exam_files() {
 
 # --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
-    if [ "\$USER" == "\$STUDENT" ]; then
+    
+    # 1. APPLY CHROME RESTRICTIONS (No Print/No Sync) TO ALL NON-ADMINS
+    if [[ ! " \$ADMINS " =~ " \$USER " ]]; then
         mkdir -p "\$CHROME_MANAGED"
         ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
     else
+        # If Admin, remove restrictions
         rm -f "\$POLICY_DEST"
     fi
 
+    # 2. BLOCK INTERNET FOR SPECIFIC USERS
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         block_internet
         logger "SEC_SCRIPT: Internet Blocked for \$USER"
     fi
 
+    # 3. SETUP EXAM FILES
     if [ "\$USER" == "\$EXAM" ] || [ "\$USER" == "\$TEST" ]; then
         setup_exam_files &
     fi
@@ -233,7 +228,9 @@ if [ "\$TYPE" == "close_session" ]; then
         unblock_internet
     fi
 
-    if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
+    # Wipe Student/Test/Mock users, but leave a@/b@ alone (unless you want them wiped too)
+    # Current logic wipes specific accounts only to be safe.
+    if [ "\$USER" == "$STUDENT_USER" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
         /usr/local/bin/universal_cleanup.sh "\$USER" wipe
     fi
@@ -264,10 +261,10 @@ done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
 
-# 6. SYSTEMD BOOT CLEANUP (SAFETY NET)
+# 6. SYSTEMD BOOT CLEANUP
 cat << EOF > /etc/systemd/system/cleanup-boot.service
 [Unit]
-Description=Safety Cleanup (Chrome, Student, Epoptes, Inactive)
+Description=Safety Cleanup
 After=network.target
 
 [Service]
@@ -287,57 +284,54 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-# 7. UI ENFORCEMENT
+# 7. UI ENFORCEMENT (UPDATED: Mutes all non-admins + Blocks Printing)
 echo ">>> Generating UI Enforcer script..."
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
 THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
+# Exit if Admin
+if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# --- EXEMPT ADMINS ---
-# If it is an admin, exit script (do not apply restrictions)
-if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
-    exit 0
-fi
+RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
-# --- APPLY TO ALL NON-ADMINS (Student, Exam, Mock, a@, b@, etc) ---
+# === 1. AUDIO & PRINTING (APPLIES TO ALL NON-ADMINS including a@, b@) ===
 sleep 3
-
-# 1. MUTE AUDIO ON SIGN IN
+# Mute Audio and Set Volume to 0%
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+pactl set-sink-volume @DEFAULT_SINK@ 0% > /dev/null 2>&1 || true
 
-# 2. GENERAL LOCKDOWNS
+# Disable Printing in GNOME (Chrome is handled by Policy)
+gsettings set org.gnome.desktop.lockdown disable-printing true
+gsettings set org.gnome.desktop.lockdown disable-print-setup true
+
+# Misc Performance Settings
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
-gsettings set org.gnome.desktop.lockdown disable-printing true
-gsettings set org.gnome.desktop.lockdown disable-print-setup true
-gsettings set org.gnome.desktop.lockdown disable-user-switching true
-
-# 3. DETERMINE MODE
-RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # === STRICT EXAM MODE ===
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
     
-    # DOCK: ONLY THONNY
+    # 1. DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # DISABLE "SUPER" KEY & APP GRID
+    # 2. DISABLE "SUPER" KEY
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
+    # 3. HIDE APPS GRID
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
 
-    # DISABLE RUN COMMAND
+    # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STANDARD STUDENT/OTHER MODE (e.g. a@sec.local) ===
+    # === STUDENT/OTHER MODE (a@, b@, student@) ===
     # Reset Super Key & App Grid
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
@@ -373,38 +367,7 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
 
-# 7.5 POLICYKIT RESTRICTIONS (WI-FI, NETWORK, PRINTERS, COLOR)
-echo ">>> Applying Admin-Only restrictions (Polkit)..."
-mkdir -p /etc/polkit-1/rules.d/
-
-cat << EOF > /etc/polkit-1/rules.d/99-school-restrictions.rules
-/* * RESTRICT: Wi-Fi, Network, Printers, Color Management, Software Install
- * ACTION: Require Admin Password (auth_admin) for ANY of these actions.
- */
-polkit.addRule(function(action, subject) {
-    // 1. NETWORK & WI-FI (NetworkManager)
-    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0) {
-        return polkit.Result.AUTH_ADMIN;
-    }
-    // 2. PRINTERS (CUPS / SCP-DBUS)
-    if (action.id.indexOf("org.opensuse.cupspkhelper.mechanism.") === 0 ||
-        action.id.indexOf("com.redhat.printer-drivers-installer") === 0 ||
-        action.id.indexOf("org.debian.apt.install-or-remove-packages") === 0) {
-        return polkit.Result.AUTH_ADMIN;
-    }
-    // 3. COLOR MANAGEMENT (Colord)
-    if (action.id.indexOf("org.freedesktop.color-manager.") === 0) {
-        return polkit.Result.AUTH_ADMIN;
-    }
-    // 4. DISPLAY / SYSTEM SETTINGS (Generic guards)
-    if (action.id.indexOf("org.freedesktop.hostname1.") === 0 ||
-        action.id.indexOf("org.freedesktop.timedate1.") === 0) {
-        return polkit.Result.AUTH_ADMIN;
-    }
-});
-EOF
-
-# 8. MISC FIXES (INCLUDES SINGLE USER ENFORCEMENT)
+# 8. MISC FIXES
 echo ">>> Applying final fixes..."
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
 net.ipv4.tcp_keepalive_time = 60
@@ -413,16 +376,11 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# Disable Fast User Switching & PRINTERS (DCONF)
+# Disable Fast User Switching
 mkdir -p /etc/dconf/profile
 echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
 mkdir -p /etc/dconf/db/local.d
-cat << EOF > /etc/dconf/db/local.d/00-school-locks
-[org/gnome/desktop/lockdown]
-disable-user-switching=true
-disable-printing=true
-disable-print-setup=true
-EOF
+echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
 dconf update
 
 # Hide VNC & Terminal Icons
@@ -436,7 +394,7 @@ done
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# File Associations & DEFAULT BROWSER FIX
+# File Associations
 MIME="/usr/share/applications/mimeapps.list"
 if [ -f "$MIME" ]; then
     grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
@@ -455,8 +413,6 @@ fi
 
 # 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
 echo ">>> Scheduling Smart Shutdown & Maintenance..."
-
-# A. Create the Maintenance/Shutdown Script
 cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
 #!/bin/bash
 set -u
@@ -465,7 +421,7 @@ set -u
 CLEANUP_DAY=2  # 2 = Tuesday
 # ----------------
 
-# 1. NOTIFY USERS (5 Minute Warning)
+# 1. NOTIFY USERS
 MSG="School day ending. System will install updates and shut down in 5 minutes. Please save your work."
 wall "$MSG"
 LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
@@ -477,25 +433,20 @@ fi
 # 2. WAIT 5 MINUTES
 sleep 300
 
-# 3. PREVENT SLEEP (Keep system alive for updates)
+# 3. PREVENT SLEEP & UPDATE
 systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
-
-    # 4. RUN SYSTEM UPDATES
     logger "SmartShutdown: Starting system updates..."
     export DEBIAN_FRONTEND=noninteractive
     
-    # Update Apt
     apt-get update -q
     apt-get upgrade -y -q
     apt-get autoremove -y -q
     apt-get clean -q
     
-    # Update Snaps (VS Code only now)
     pkill -f "code" || true
     pkill -f "thonny" || true
     snap refresh || true
 
-    # 5. TUESDAY CLEANUP CHECK
     if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
         logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
         if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
@@ -510,7 +461,6 @@ poweroff
 EOF
 chmod 750 /usr/local/bin/smart_shutdown.sh
 
-# B. Create the Schedule (Cron)
 cat << EOF > /etc/cron.d/school_shutdown_schedule
 # m h dom mon dow user  command
 10 16 * * 1-4 root /usr/local/bin/smart_shutdown.sh
@@ -521,7 +471,7 @@ chmod 644 /etc/cron.d/school_shutdown_schedule
 # 10. FINAL POLISH
 echo ">>> Applying final polish..."
 
-# A. Disable Software Update Notifications
+# Disable Update Notifications
 cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
@@ -530,9 +480,8 @@ APT::Periodic::Unattended-Upgrade "0";
 EOF
 gsettings set com.ubuntu.update-notifier no-show-notifications true || true
 
-# B. Configure Epoptes Server (Check first)
+# Epoptes Config
 EPOPTES_FILE="/etc/default/epoptes-client"
-
 if [ -f "$EPOPTES_FILE" ]; then
     if grep -q "^SERVER=$EPOPTES_SERVER" "$EPOPTES_FILE"; then
         echo ">>> Epoptes already configured correctly."
@@ -541,14 +490,12 @@ if [ -f "$EPOPTES_FILE" ]; then
         sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
         epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
     fi
-else
-    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
 fi
 
-# C. Set Timezone
+# Set Timezone
 timedatectl set-timezone Europe/Dublin
 
-# D. SELF DESTRUCT (Security)
+# D. SELF DESTRUCT
 echo ">>> CONFIGURATION COMPLETE."
 echo ">>> Deleting this script file to protect Wi-Fi passwords..."
 rm -- "$0"
