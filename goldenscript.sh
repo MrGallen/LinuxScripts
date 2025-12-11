@@ -426,6 +426,8 @@ EOF
 
 # 8. MISC FIXES
 echo ">>> Applying final fixes..."
+
+# A. TCP Keepalive
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_intvl = 10
@@ -433,41 +435,60 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# Disable Fast User Switching
+# B. Disable Fast User Switching
 mkdir -p /etc/dconf/profile
 echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
 mkdir -p /etc/dconf/db/local.d
 echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
 dconf update
 
-# Hide VNC & Terminal Icons
+# C. Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
     [ -f "$FILE" ] && echo "NoDisplay=true" >> "$FILE"
 done
 
-# Microbit Rules
+# D. Microbit Rules
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# File Associations & DEFAULT BROWSER FIX
-MIME="/usr/share/applications/mimeapps.list"
-if [ -f "$MIME" ]; then
-    grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
-    sed -i '/text\/csv/d' "$MIME"
-    sed -i '/text\/plain/d' "$MIME"
-    sed -i '/text\/html/d' "$MIME"
-    sed -i '/x-scheme-handler\/http/d' "$MIME"
-    sed -i '/x-scheme-handler\/https/d' "$MIME"
-    
-    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-chrome.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a x-scheme-handler/https=google-chrome.desktop' "$MIME"
+# E. FILE ASSOCIATIONS (Fixed)
+# 1. Identify Apps
+if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then
+    CODE_APP="code_code.desktop"
+else
+    CODE_APP="code.desktop"
 fi
+THONNY_APP="org.thonny.Thonny.desktop"
 
+# 2. Target XDG System Config
+MIME="/etc/xdg/mimeapps.list"
+mkdir -p /etc/xdg
+touch "$MIME"
+
+# Ensure Header
+grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
+
+# Clean old entries
+sed -i '/text\/csv/d' "$MIME"
+sed -i '/text\/plain/d' "$MIME"
+sed -i '/text\/html/d' "$MIME"
+sed -i '/x-scheme-handler\/http/d' "$MIME"
+sed -i '/x-scheme-handler\/https/d' "$MIME"
+sed -i '/text\/x-python/d' "$MIME"
+sed -i '/application\/x-python-code/d' "$MIME"
+
+# Inject Defaults
+cat << EOF >> "$MIME"
+text/csv=$CODE_APP
+text/plain=$CODE_APP
+text/x-python=$THONNY_APP
+application/x-python-code=$THONNY_APP
+text/html=google-chrome.desktop
+x-scheme-handler/http=google-chrome.desktop
+x-scheme-handler/https=google-chrome.desktop
+EOF
 # 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
 echo ">>> Scheduling Smart Shutdown & Maintenance..."
 
