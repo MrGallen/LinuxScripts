@@ -389,12 +389,10 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
 
     # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
+    # Disable Terminal switching shortcuts for restricted users
+    gsettings set org.gnome.mutter.wayland.keybindings restore-shortcuts "[]"
 else
     # === STUDENT/GENERIC MODE ===
-
-
-
-    
     # Reset Super Key & App Grid
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
@@ -446,11 +444,24 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# B. Disable Fast User Switching
+# B. Disable Fast User Switching (Hardened)
+echo ">>> Disabling Fast User Switching..."
 mkdir -p /etc/dconf/profile
-echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
 mkdir -p /etc/dconf/db/local.d
-echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
+
+# 1. Create the profile so dconf knows to check the 'local' database
+cat << EOF > /etc/dconf/profile/user
+user-db:user
+system-db:local
+EOF
+
+# 2. Create the lockdown rule
+cat << EOF > /etc/dconf/db/local.d/00-disable-switching
+[org/gnome/desktop/lockdown]
+disable-user-switching=true
+EOF
+
+# 3. Force the system to recompile the dconf binary database
 dconf update
 
 # C. Hide VNC & Terminal Icons
