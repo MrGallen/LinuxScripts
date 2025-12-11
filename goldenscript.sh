@@ -1,9 +1,8 @@
-
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#     SCHOOL LINUX SYSTEM CONFIGURATION
+#      SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -19,14 +18,14 @@ WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
 # Space-separated list of accounts.
-MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
+MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local"
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
 EPOPTES_SERVER="epoptes.server.local"
 
 # 4. SETTINGS
 INACTIVE_DAYS=120
-PDF_URL="https://www.examinations.ie/docs/viewer.php?q=e5c7ee46cecf19bc20023e32f0664b6b6a152c15" 
+PDF_URL="https://www.examinations.ie/docs/viewer.php?q=e5c7ee46cecf19bc20023e32f0664b6b6a152c15"
 # ---------------------
 
 # 1. ROOT CHECK
@@ -60,7 +59,7 @@ apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg"
 
 # B. INSTALL SYSTEM LIBRARIES & APPS
 echo ">>> Installing System & Python Libraries..."
-apt-get update -q 
+apt-get update -q
 apt-get install -y -q \
     thonny \
     gnome-terminal \
@@ -97,7 +96,7 @@ chmod 644 /opt/sec_exam_resources/Python_Reference.pdf
 cat << EOF > /usr/local/bin/universal_cleanup.sh
 #!/bin/bash
 TARGET_USER="\$1"
-ACTION="\$2" 
+ACTION="\$2"
 
 clean_chrome() {
     CHROME_DIR="/home/\$TARGET_USER/.config/google-chrome"
@@ -138,7 +137,38 @@ for user in $MOCK_GROUP $EXAM_USER; do
 done
 chmod +x /etc/cron.daily/sec_cleanup
 
-# 4. PAM MASTER CONTROLLER
+# 4a. PERMANENT FIREWALL ALLOWS (Safety Net)
+# We set up a service to ALWAYS allow Local LAN/Loopback at boot.
+# This prevents the PAM hook from needing to add/remove these rules repeatedly.
+cat << EOF > /usr/local/bin/firewall_base.sh
+#!/bin/bash
+# 1. Flush existing output rules to be safe
+iptables -F OUTPUT
+# 2. Allow Loopback (Internal Apps)
+iptables -A OUTPUT -o lo -j ACCEPT
+# 3. Allow Local Network (Epoptes/Admin)
+iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+EOF
+chmod +x /usr/local/bin/firewall_base.sh
+
+cat << EOF > /etc/systemd/system/firewall-base.service
+[Unit]
+Description=Apply Base Firewall Rules (LAN Allow)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/firewall_base.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable --now firewall-base.service
+
+# 4b. PAM MASTER CONTROLLER (User Blocking Only)
 echo ">>> Configuring PAM hooks..."
 
 mkdir -p /usr/local/etc/chrome_policies
@@ -175,29 +205,19 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps)
-    iptables -I OUTPUT 1 -o lo -j ACCEPT
+    # We ONLY block here. The ALLOW rules are handled by systemd at boot.
+    # Check if rule exists to prevent duplicates
+    iptables -C OUTPUT -m owner --uid-owner "\$USER" -j REJECT 2>/dev/null || \
+    iptables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
     
-    # 2. ALLOW Local Network (Epoptes needs this!)
-    # Assuming school uses standard 192.168.x.x or 10.x.x.x
-    # If uncertain, we allow all private ranges.
-    iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
-    iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
-    iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
-
-    # 3. BLOCK Everything Else for this User
-    # We use -I (Insert) to make sure this is at the TOP of the list
-    iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
-    
-    # 4. BLOCK IPv6 as well (To be safe)
+    ip6tables -C OUTPUT -m owner --uid-owner "\$USER" -j REJECT 2>/dev/null || \
     ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
-    # Clean up the rules by User Owner match
+    # Remove the specific user block
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -207,7 +227,7 @@ setup_exam_files() {
     if [ -f "\$PDF_SOURCE" ]; then
         cp "\$PDF_SOURCE" "\$DESKTOP/"
         chown "\$USER":"\$USER" "\$DESKTOP/Python_Reference.pdf"
-        chmod 444 "\$DESKTOP/Python_Reference.pdf" 
+        chmod 444 "\$DESKTOP/Python_Reference.pdf"
     fi
 }
 
@@ -323,7 +343,6 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
     # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
-    # This prevents users from clicking the button to see other apps
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
@@ -404,8 +423,9 @@ if [ -f "$MIME" ]; then
     sed -i '/x-scheme-handler\/http/d' "$MIME"
     sed -i '/x-scheme-handler\/https/d' "$MIME"
     
-    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
+    # Use the $CODE variable detected in Section 7
+    sed -i "/\[Default Applications\]/a text\/csv=$CODE" "$MIME"
+    sed -i "/\[Default Applications\]/a text\/plain=$CODE" "$MIME"
     sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
     sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-chrome.desktop' "$MIME"
     sed -i '/\[Default Applications\]/a x-scheme-handler/https=google-chrome.desktop' "$MIME"
@@ -420,7 +440,7 @@ cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
 set -u
 
 # --- CONFIG ---
-CLEANUP_DAY=2  # 2 = Tuesday
+export CLEANUP_DAY=2  # 2 = Tuesday. EXPORTED to be visible in subshells.
 # ----------------
 
 # 1. NOTIFY USERS (5 Minute Warning)
@@ -448,12 +468,13 @@ systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
     apt-get autoremove -y -q
     apt-get clean -q
     
-    # Update Snaps (VS Code only now)
+    # Update Snaps
     pkill -f "code" || true
     pkill -f "thonny" || true
     snap refresh || true
 
     # 5. TUESDAY CLEANUP CHECK
+    # Note: CLEANUP_DAY is visible here because we exported it above.
     if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
         logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
         if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
