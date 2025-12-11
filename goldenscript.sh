@@ -66,30 +66,16 @@ echo ">>> Purging conflicting packages..."
 snap remove thonny || true
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
 
-# B. INSTALL SYSTEM LIBRARIES & APPS
-echo ">>> Installing System & Python Libraries..."
+# B. ENABLE UNIVERSE REPO (Crucial for Thonny/PyGame in 24.04)
+echo ">>> Enabling Universe Repository..."
+apt-get update -q
+apt-get install -y software-properties-common
 add-apt-repository universe -y
-apt-get update -q 
+apt-get update -q
 
-# Try installing Thonny via APT first
-if ! apt-get install -y -q thonny; then
-    echo ">>> Warning: Thonny APT failed. Installing via PIP..."
-    apt-get install -y python3-tk
-    pip3 install thonny --break-system-packages
-    
-    # Create Desktop shortcut for Pip version if needed
-    cat << EOF > /usr/share/applications/org.thonny.Thonny.desktop
-[Desktop Entry]
-Type=Application
-Name=Thonny
-Exec=python3 -m thonny
-Icon=thonny
-Terminal=false
-Categories=Development;IDE;
-EOF
-fi
-
-# Install the rest
+# C. INSTALL SYSTEM LIBRARIES & APPS
+echo ">>> Installing System & Python Libraries..."
+# We try to install Thonny via APT, but if it fails, we will grab it via PIP later
 apt-get install -y -q \
     gnome-terminal \
     python3-pip \
@@ -98,16 +84,14 @@ apt-get install -y -q \
     python3-matplotlib \
     python3-pandas \
     python3-pygal \
-    python3-pygame
+    python3-pygame \
+    thonny || echo ">>> WARNING: Thonny APT install failed. Will try PIP."
 
-# C. INSTALL CUSTOM PIP LIBRARIES
+# D. INSTALL CUSTOM PIP LIBRARIES (With Thonny Fallback)
 echo ">>> Installing Custom PyPI Libraries..."
-pip3 install firebase compscifirebase --break-system-packages
+# We force install thonny here just in case APT failed or gave an old version
+pip3 install firebase compscifirebase thonny --break-system-packages
 
-# D. SYSTEM UPGRADE
-echo ">>> Upgrading System..."
-apt-get upgrade -y -q
-apt-get autoremove -y -q
 
 # E. INSTALL SNAPS
 echo ">>> Installing Snaps..."
@@ -344,59 +328,8 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-# 7. UI ENFORCEMENT (INSTANT LOAD)
-echo ">>> generating System-Wide UI Defaults (Dconf)..."
-
-# 1. Create the Profile
-mkdir -p /etc/dconf/profile
-cat << EOF > /etc/dconf/profile/user
-user-db:user
-system-db:local
-EOF
-
-# 2. Define the 'Instant' Defaults (Applies before login completes)
-mkdir -p /etc/dconf/db/local.d
-cat << EOF > /etc/dconf/db/local.d/01-school-defaults
-[org/gnome/desktop/interface]
-clock-show-seconds=true
-enable-hot-corners=true
-gtk-theme='Yaru-purple'
-icon-theme='Yaru-purple'
-
-[org/gnome/desktop/calendar]
-show-weekdate=true
-
-[org/gnome/shell/extensions/dash-to-dock]
-dock-position='BOTTOM'
-dock-fixed=false
-dash-max-icon-size=54
-autohide=true
-extend-height=false
-
-[org/gnome/shell/extensions/ubuntu-dock]
-dock-position='BOTTOM'
-dock-fixed=false
-dash-max-icon-size=54
-autohide=true
-extend-height=false
-
-[org/gnome/desktop/sound]
-mute-output-volume=true
-
-[org/gnome/desktop/lockdown]
-disable-printing=true
-disable-print-setup=true
-disable-user-switching=true
-EOF
-
-# 3. Update the database immediately
-dconf update
-
-# ---------------------------------------------------------
-# 4. The Dynamic Script (Only for Exam/Student switching)
-#    This is smaller now, so it runs faster.
-# ---------------------------------------------------------
-echo ">>> Generating Dynamic UI Enforcer..."
+# 7. UI ENFORCEMENT
+echo ">>> Generating UI Enforcer script..."
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
 THONNY="org.thonny.Thonny.desktop"
 
@@ -405,49 +338,90 @@ cat << EOF > /usr/local/bin/force_ui.sh
 # Exit early if Admin
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# Hardware Mute (Still needs to run here to catch the driver)
-pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+# === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
 
-# === DYNAMIC MODE SWITCHING ===
+# 1. FORCE MUTE AUDIO (Hardware & UI)
+# Hardware sink mute
+for i in {1..5}; do
+    pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+    sleep 1
+done
+# UI/Gsettings mute (Visual toggle)
+gsettings set org.gnome.desktop.sound mute-output-volume true
+
+# 2. FORCE DISABLE PRINTING
+gsettings set org.gnome.desktop.lockdown disable-printing true
+gsettings set org.gnome.desktop.lockdown disable-print-setup true
+
+# --- NEW FIX: DISABLE USER SWITCHING ---
+gsettings set org.gnome.desktop.lockdown disable-user-switching true
+gsettings set org.gnome.desktop.lockdown disable-log-out false
+
+# 3. CLOCK SETTINGS (Seconds & Week Numbers)
+gsettings set org.gnome.desktop.interface clock-show-seconds true
+gsettings set org.gnome.desktop.calendar show-weekdate true
+
+# 4. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
+gsettings set org.gnome.desktop.interface enable-hot-corners true
+gsettings set org.gnome.mutter edge-tiling true
+
+# === SPECIFIC MODES ===
 RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
+sleep 2
+
+# Power Settings
+powerprofilesctl set performance || true
+gsettings set org.gnome.desktop.screensaver lock-enabled false
+gsettings set org.gnome.desktop.session idle-delay 0
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
-    # === EXAM MODE ===
-    # Set Orange Theme
+    # === STRICT EXAM MODE ===
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
     
-    # Lock Dock to Thonny Only
+    # 1. DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # Disable Super Key
+    # 2. DISABLE "SUPER" KEY
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
-    # Hide Apps Grid
+    # 3. HIDE "SHOW APPLICATIONS"
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
-    
-    # Disable Run Command
-    gsettings set org.gnome.desktop.lockdown disable-command-line true
 
+    # 4. DISABLE RUN COMMAND
+    gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === NORMAL STUDENT MODE ===
-    # (Most defaults are already set by dconf, just setting favorites)
+    # === STUDENT/GENERIC MODE ===
+    
+    # Reset Super Key & App Grid
+    gsettings set org.gnome.mutter overlay-key 'Super_L'
+    gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
+    
+    gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
+    gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
-    # Ensure Apps Grid is visible
+    # Ensure Apps Button is VISIBLE
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button true
     done
 fi
 
+# Dock Position and Styling
+for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
+    gsettings set \$schema dock-position 'BOTTOM'
+    gsettings set \$schema autohide true
+    gsettings set \$schema extend-height false
+    gsettings set \$schema dash-max-icon-size 54
+    gsettings set \$schema dock-fixed false
+done
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
 chmod +x /usr/local/bin/force_ui.sh
 
-# Autostart for the dynamic part
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
 Type=Application
