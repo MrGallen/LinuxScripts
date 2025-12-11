@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#     SCHOOL LINUX SYSTEM CONFIGURATION
+#      SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -17,7 +17,8 @@ WIFI_SSID="Admin"
 WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
-# Space-separated list of accounts.
+# Space-separated list of accounts used for special exam modes
+# NOTE: The restrictions in this script now apply to ALL non-admins automatically.
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
@@ -38,14 +39,10 @@ echo ">>> Starting Final System Setup..."
 
 # 1.5 CONNECT TO WI-FI (Aggressive Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
-# 1. Turn radio ON
 nmcli radio wifi on
-# 2. Delete any old/corrupt profile with this name
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
-# 3. Rescan to find the network
 nmcli device wifi rescan || true
 sleep 3
-# 4. Connect
 nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
@@ -165,6 +162,7 @@ TYPE="\$PAM_TYPE"
 STUDENT="$STUDENT_USER"
 EXAM="$EXAM_USER"
 TEST="$TEST_USER"
+# Define strict offline users
 NO_NET_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 CHROME_MANAGED="/etc/opt/chrome/policies/managed"
@@ -174,29 +172,17 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps)
     iptables -I OUTPUT 1 -o lo -j ACCEPT
-    
-    # 2. ALLOW Local Network (Epoptes needs this!)
-    # Assuming school uses standard 192.168.x.x or 10.x.x.x
-    # If uncertain, we allow all private ranges.
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
-
-    # 3. BLOCK Everything Else for this User
-    # We use -I (Insert) to make sure this is at the TOP of the list
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
-    
-    # 4. BLOCK IPv6 as well (To be safe)
     ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
-    # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -212,6 +198,7 @@ setup_exam_files() {
 
 # --- LOGIN LOGIC ---
 if [ "\$TYPE" == "open_session" ]; then
+    # Apply Chrome Policy to Student
     if [ "\$USER" == "\$STUDENT" ]; then
         mkdir -p "\$CHROME_MANAGED"
         ln -sf "\$POLICY_SOURCE" "\$POLICY_DEST"
@@ -219,6 +206,7 @@ if [ "\$TYPE" == "open_session" ]; then
         rm -f "\$POLICY_DEST"
     fi
 
+    # Block Internet for Mock/Exam users
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         block_internet
         logger "SEC_SCRIPT: Internet Blocked for \$USER"
@@ -268,7 +256,7 @@ done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
 
-# 6. SYSTEMD BOOT CLEANUP (SAFETY NET)
+# 6. SYSTEMD BOOT CLEANUP
 cat << EOF > /etc/systemd/system/cleanup-boot.service
 [Unit]
 Description=Safety Cleanup (Chrome, Student, Epoptes, Inactive)
@@ -291,47 +279,59 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-# 7. UI ENFORCEMENT
+# 7. UI ENFORCEMENT (UPDATED FOR MUTE & RESTRICTIONS)
 echo ">>> Generating UI Enforcer script..."
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
 THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
-if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
+# --- EXEMPT ADMINS ---
+# Any user not in this list will be restricted.
+if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
+    exit 0
+fi
+
+# --- APPLY TO ALL NON-ADMINS ---
 sleep 3
+
+# 1. MUTE AUDIO ON LOGIN
+# Forces audio mute immediately upon login for non-admins
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+
+# 2. POWER & LOCKDOWN
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
+gsettings set org.gnome.desktop.lockdown disable-user-switching true
+
+# 3. IDENTIFY MODE (EXAM vs STANDARD)
+RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # === STRICT EXAM MODE ===
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
     
-    # 1. DOCK: ONLY THONNY
+    # DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # 2. DISABLE "SUPER" KEY (Prevents opening App Menu)
+    # DISABLE "SUPER" KEY & APP GRID
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
-    # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
-    # This prevents users from clicking the button to see other apps
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
 
-    # 4. DISABLE RUN COMMAND
+    # DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STUDENT MODE ===
-    # Reset Super Key & App Grid for normal students
+    # === STANDARD STUDENT/USER MODE ===
+    # (Applies to student@, a@, b@, etc.)
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
     
@@ -339,174 +339,13 @@ else
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
-    # Ensure Apps Button is VISIBLE for students
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button true
     done
 fi
 
+# 4. DOCK LAYOUT (Universal)
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
-    gsettings set \$schema extend-height false
-    gsettings set \$schema dash-max-icon-size 54
-    gsettings set \$schema dock-fixed false
-done
-gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
-EOF
-chmod +x /usr/local/bin/force_ui.sh
-
-cat << EOF > /etc/xdg/autostart/force_ui.desktop
-[Desktop Entry]
-Type=Application
-Name=Force UI
-Exec=/usr/local/bin/force_ui.sh
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-EOF
-
-# 8. MISC FIXES (INCLUDES SINGLE USER ENFORCEMENT)
-echo ">>> Applying final fixes..."
-cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
-net.ipv4.tcp_keepalive_time = 60
-net.ipv4.tcp_keepalive_intvl = 10
-net.ipv4.tcp_keepalive_probes = 3
-EOF
-sysctl --system
-
-# Disable Fast User Switching (Enforces Single User)
-mkdir -p /etc/dconf/profile
-echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
-mkdir -p /etc/dconf/db/local.d
-echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
-dconf update
-
-# Hide VNC & Terminal Icons
-APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
-for app in "${APPS[@]}"; do
-    FILE="/usr/share/applications/$app"
-    [ -f "$FILE" ] && echo "NoDisplay=true" >> "$FILE"
-done
-
-# Microbit Rules
-echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
-udevadm control --reload
-
-# File Associations & DEFAULT BROWSER FIX
-MIME="/usr/share/applications/mimeapps.list"
-if [ -f "$MIME" ]; then
-    grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
-    sed -i '/text\/csv/d' "$MIME"
-    sed -i '/text\/plain/d' "$MIME"
-    sed -i '/text\/html/d' "$MIME"
-    sed -i '/x-scheme-handler\/http/d' "$MIME"
-    sed -i '/x-scheme-handler\/https/d' "$MIME"
-    
-    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-chrome.desktop' "$MIME"
-    sed -i '/\[Default Applications\]/a x-scheme-handler/https=google-chrome.desktop' "$MIME"
-fi
-
-# 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
-echo ">>> Scheduling Smart Shutdown & Maintenance..."
-
-# A. Create the Maintenance/Shutdown Script
-cat << 'EOF' > /usr/local/bin/smart_shutdown.sh
-#!/bin/bash
-set -u
-
-# --- CONFIG ---
-CLEANUP_DAY=2  # 2 = Tuesday
-# ----------------
-
-# 1. NOTIFY USERS (5 Minute Warning)
-MSG="School day ending. System will install updates and shut down in 5 minutes. Please save your work."
-wall "$MSG"
-LOGGED_USER=$(who | grep ':0' | awk '{print $1}' | head -n 1)
-if [ -n "$LOGGED_USER" ]; then
-    USER_ID=$(id -u "$LOGGED_USER")
-    sudo -u "$LOGGED_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"$USER_ID"/bus notify-send "SYSTEM SHUTDOWN" "$MSG" --urgency=critical --icon=system-shutdown || true
-fi
-
-# 2. WAIT 5 MINUTES
-sleep 300
-
-# 3. PREVENT SLEEP (Keep system alive for updates)
-systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
-
-    # 4. RUN SYSTEM UPDATES
-    logger "SmartShutdown: Starting system updates..."
-    export DEBIAN_FRONTEND=noninteractive
-    
-    # Update Apt
-    apt-get update -q
-    apt-get upgrade -y -q
-    apt-get autoremove -y -q
-    apt-get clean -q
-    
-    # Update Snaps (VS Code only now)
-    pkill -f "code" || true
-    pkill -f "thonny" || true
-    snap refresh || true
-
-    # 5. TUESDAY CLEANUP CHECK
-    if [ "$(date +%u)" -eq "$CLEANUP_DAY" ]; then
-        logger "SmartShutdown: It is Tuesday. Running Inactive User Cleanup..."
-        if [ -f /usr/local/bin/cleanup_old_users.sh ]; then
-            /usr/local/bin/cleanup_old_users.sh
-        fi
-    fi
-'
-
-# 6. SHUTDOWN
-logger "SmartShutdown: Maintenance complete. Powering off."
-poweroff
-EOF
-chmod 750 /usr/local/bin/smart_shutdown.sh
-
-# B. Create the Schedule (Cron)
-cat << EOF > /etc/cron.d/school_shutdown_schedule
-# m h dom mon dow user  command
-10 16 * * 1-4 root /usr/local/bin/smart_shutdown.sh
-25 13 * * 5   root /usr/local/bin/smart_shutdown.sh
-EOF
-chmod 644 /etc/cron.d/school_shutdown_schedule
-
-# 10. FINAL POLISH
-echo ">>> Applying final polish..."
-
-# A. Disable Software Update Notifications
-cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
-APT::Periodic::Update-Package-Lists "0";
-APT::Periodic::Download-Upgradeable-Packages "0";
-APT::Periodic::AutocleanInterval "0";
-APT::Periodic::Unattended-Upgrade "0";
-EOF
-gsettings set com.ubuntu.update-notifier no-show-notifications true || true
-
-# B. Configure Epoptes Server (Check first)
-EPOPTES_FILE="/etc/default/epoptes-client"
-
-if [ -f "$EPOPTES_FILE" ]; then
-    if grep -q "^SERVER=$EPOPTES_SERVER" "$EPOPTES_FILE"; then
-        echo ">>> Epoptes already configured correctly."
-    else
-        echo ">>> Configuring Epoptes to $EPOPTES_SERVER..."
-        sed -i -E "s/^#?SERVER=.*/SERVER=$EPOPTES_SERVER/" "$EPOPTES_FILE"
-        epoptes-client -c || echo "Warning: Epoptes cert fetch failed. Run 'epoptes-client -c' later."
-    fi
-else
-    echo "Warning: Epoptes client config not found at $EPOPTES_FILE"
-fi
-
-# C. Set Timezone
-timedatectl set-timezone Europe/Dublin
-
-# D. SELF DESTRUCT (Security)
-echo ">>> CONFIGURATION COMPLETE."
-echo ">>> Deleting this script file to protect Wi-Fi passwords..."
-rm -- "$0"
-echo ">>> Script deleted. Please Reboot."
+    gsettings set
