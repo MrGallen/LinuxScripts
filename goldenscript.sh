@@ -1,8 +1,9 @@
+
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#      SCHOOL LINUX SYSTEM CONFIGURATION
+#     SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -178,11 +179,14 @@ block_internet() {
     iptables -I OUTPUT 1 -o lo -j ACCEPT
     
     # 2. ALLOW Local Network (Epoptes needs this!)
+    # Assuming school uses standard 192.168.x.x or 10.x.x.x
+    # If uncertain, we allow all private ranges.
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
 
     # 3. BLOCK Everything Else for this User
+    # We use -I (Insert) to make sure this is at the TOP of the list
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
     
     # 4. BLOCK IPv6 as well (To be safe)
@@ -193,6 +197,7 @@ unblock_internet() {
     # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
+    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -318,6 +323,7 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
     # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
+    # This prevents users from clicking the button to see other apps
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
@@ -470,92 +476,7 @@ cat << EOF > /etc/cron.d/school_shutdown_schedule
 EOF
 chmod 644 /etc/cron.d/school_shutdown_schedule
 
-
-# ==========================================
-# 10. GLOBAL DATA LOSS PREVENTION (10MB LIMIT)
-# ==========================================
-echo ">>> Configuring Global File Size Limits (10MB Cap)..."
-
-LIMIT_CONF="/etc/security/limits.conf"
-MAX_SIZE_KB="10240"  # 10MB in Kilobytes
-
-# A. Backup config
-if [ ! -f "$LIMIT_CONF.bak" ]; then cp "$LIMIT_CONF" "$LIMIT_CONF.bak"; fi
-
-# B. Clean old rules (prevent duplicates if script is run twice)
-sed -i '/fsize/d' "$LIMIT_CONF"
-
-# C. Logic: Restrict EVERYONE first, then Exempt Admins
-# -----------------------------------------------------
-
-# 1. Apply Limit to the Wildcard (*)
-# This catches student, exam, joe, mary, and any future user created.
-echo "* hard fsize $MAX_SIZE_KB" >> "$LIMIT_CONF"
-
-# 2. Exempt the Admins
-# We add Root to this list to ensure system updates don't fail.
-# We also include the admin accounts defined at the top.
-ADMIN_LIST="root $ADMIN_USER_1 $ADMIN_USER_2"
-
-for ADM in $ADMIN_LIST; do
-    echo ">>> Exempting Admin from size limits: $ADM"
-    echo "$ADM hard fsize unlimited" >> "$LIMIT_CONF"
-    echo "$ADM soft fsize unlimited" >> "$LIMIT_CONF"
-done
-
-
-# ==========================================
-# 11. ADMIN APPROVAL TOOL (BYPASS)
-# ==========================================
-echo ">>> Creating Admin Approval Tool (admin-dl)..."
-
-# This tool allows an admin to download a large file 
-# and move it to a restricted user's desktop.
-
-cat << 'EOF' > /usr/local/bin/admin-dl
-#!/bin/bash
-# Usage: sudo admin-dl <URL> <TARGET_USERNAME>
-
-URL="$1"
-TARGET_USER="$2"
-
-if [ -z "$URL" ] || [ -z "$TARGET_USER" ]; then
-    echo "Usage: sudo admin-dl <URL> <USERNAME>"
-    echo "Example: sudo admin-dl https://example.com/bigfile.zip joe@sec.local"
-    exit 1
-fi
-
-# 1. Get Filename
-FILENAME=$(basename "$URL")
-DEST="/home/$TARGET_USER/Desktop/$FILENAME"
-
-# 2. Validate User exists
-if ! id "$TARGET_USER" &>/dev/null; then
-    echo "Error: User $TARGET_USER does not exist."
-    exit 1
-fi
-
-echo ">>> Admin Override: Downloading $FILENAME..."
-echo ">>> Destination: $DEST"
-
-# 3. Download to /tmp (Root acts as the proxy here)
-wget -q --show-progress -O "/tmp/$FILENAME" "$URL"
-
-if [ $? -eq 0 ]; then
-    # 4. Move to User Desktop and Fix Permissions
-    mv "/tmp/$FILENAME" "$DEST"
-    chown "$TARGET_USER":"$TARGET_USER" "$DEST"
-    chmod 644 "$DEST"
-    echo ">>> Success: File delivered to $TARGET_USER."
-else
-    echo ">>> Error: Download failed."
-    rm -f "/tmp/$FILENAME"
-fi
-EOF
-chmod +x /usr/local/bin/admin-dl
-
-
-# 12. FINAL POLISH
+# 10. FINAL POLISH
 echo ">>> Applying final polish..."
 
 # A. Disable Software Update Notifications
