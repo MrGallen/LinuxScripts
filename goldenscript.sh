@@ -323,78 +323,97 @@ EOF
 chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
+# 7. UI ENFORCEMENT (HYBRID METHOD)
+echo ">>> Locking down Global UI Settings (Instant & Permanent)..."
 
-# 7. UI ENFORCEMENT
-echo ">>> Generating UI Enforcer script..."
+# A. APPLY GLOBAL LOCKS (Zero Lag)
+# These settings apply instantly before the desktop even loads.
+
+mkdir -p /etc/dconf/profile
+mkdir -p /etc/dconf/db/local.d/locks
+
+# 1. Define the 'user' profile to include a 'local' system database
+echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
+
+# 2. Create the System-Wide Settings (Applied to EVERYONE instantly)
+cat << EOF > /etc/dconf/db/local.d/00-school-defaults
+[org/gnome/desktop/sound]
+mute-output-volume=true
+
+[org/gnome/desktop/lockdown]
+disable-printing=true
+disable-print-setup=true
+disable-user-switching=true
+
+[org/gnome/desktop/interface]
+clock-show-seconds=true
+enable-hot-corners=true
+
+[org/gnome/desktop/calendar]
+show-weekdate=true
+
+[org/gnome/mutter]
+edge-tiling=true
+EOF
+
+# 3. LOCK these settings so students cannot change them
+cat << EOF > /etc/dconf/db/local.d/locks/school-locks
+/org/gnome/desktop/sound/mute-output-volume
+/org/gnome/desktop/lockdown/disable-printing
+/org/gnome/desktop/lockdown/disable-print-setup
+/org/gnome/desktop/interface/clock-show-seconds
+/org/gnome/desktop/lockdown/disable-user-switching
+EOF
+
+# 4. Update the binary database
+dconf update
+
+
+# B. GENERATE USER LOGIC SCRIPT (Low Lag)
+# This only runs for visual changes (Icons/Theme) that depend on WHO logged in.
+
+echo ">>> Generating Conditional UI Script..."
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
 THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
-# Exit early if Admin
+
+# Admins skip everything
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
-
-# 1. FORCE MUTE AUDIO (Hardware & UI)
-# Hardware sink mute
-for i in {1..5}; do
-    pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
-    sleep 1
-done
-# UI/Gsettings mute (Visual toggle)
-gsettings set org.gnome.desktop.sound mute-output-volume true
-
-# 2. FORCE DISABLE PRINTING
-gsettings set org.gnome.desktop.lockdown disable-printing true
-gsettings set org.gnome.desktop.lockdown disable-print-setup true
-
-# 3. CLOCK SETTINGS (Seconds & Week Numbers)
-gsettings set org.gnome.desktop.interface clock-show-seconds true
-gsettings set org.gnome.desktop.calendar show-weekdate true
-
-# 4. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
-gsettings set org.gnome.desktop.interface enable-hot-corners true
-gsettings set org.gnome.mutter edge-tiling true
-
-# === SPECIFIC MODES ===
+# DEFINE VARIABLES
 RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
-sleep 2
 
-# Power Settings
-powerprofilesctl set performance || true
-gsettings set org.gnome.desktop.screensaver lock-enabled false
-gsettings set org.gnome.desktop.session idle-delay 0
+# Wait a split second to ensure the user session DB is writable
+sleep 1
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
-    # === STRICT EXAM MODE ===
+    # === EXAM MODE ===
+    # Visuals
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
-    gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
-    
-    # 1. DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # 2. DISABLE "SUPER" KEY
+    # Restrictions
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
+    gsettings set org.gnome.desktop.lockdown disable-command-line true
     
-    # 3. HIDE "SHOW APPLICATIONS"
+    # Hide "Show Apps" button (The 9 dots)
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
 
-    # 4. DISABLE RUN COMMAND
-    gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STUDENT/GENERIC MODE ===
+    # === STUDENT MODE ===
+    # Visuals
+    gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
+    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
-    # Reset Super Key & App Grid
+    # Reset Restrictions (In case they were stuck from a previous exam session)
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
-    
-    gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
-    gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
-    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
+    gsettings set org.gnome.desktop.lockdown disable-command-line false
     
     # Ensure Apps Button is VISIBLE
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
@@ -402,7 +421,7 @@ else
     done
 fi
 
-# Dock Position and Styling
+# Dock Styling (Apply to everyone)
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
@@ -410,10 +429,12 @@ for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensi
     gsettings set \$schema dash-max-icon-size 54
     gsettings set \$schema dock-fixed false
 done
+
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
 chmod +x /usr/local/bin/force_ui.sh
 
+# C. AUTOSTART THE LOGIC SCRIPT
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
 Type=Application
@@ -423,7 +444,6 @@ Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
-
 # 8. MISC FIXES
 echo ">>> Applying final fixes..."
 
