@@ -35,13 +35,27 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
-# 1.5 CONNECT TO WI-FI (Aggressive Mode)
+# 1.5 CONNECT TO WI-FI (System-Wide Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
 nmcli radio wifi on
+
+# Delete existing connection if it exists
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
 nmcli device wifi rescan || true
 sleep 3
+
+# Connect initially
 nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
+
+# === THE FIX IS HERE ===
+# 1. Set permissions to empty (makes it available to all users)
+nmcli connection modify "$WIFI_SSID" connection.permissions ""
+# 2. Set psk-flags to 0 (stores password unencrypted in root-only file /etc/NetworkManager/system-connections/, preventing keyring prompts)
+nmcli connection modify "$WIFI_SSID" wifi-sec.psk-flags 0
+# 3. Ensure autoconnect is on
+nmcli connection modify "$WIFI_SSID" connection.autoconnect yes
+
+echo ">>> Wi-Fi configured as Global System Connection."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Preparing system..."
