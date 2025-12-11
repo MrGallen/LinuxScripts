@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#      SCHOOL LINUX SYSTEM CONFIGURATION
+#       SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -63,6 +63,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # A. CLEANUP FIRST
 echo ">>> Purging conflicting packages..."
+# Ensure Thonny SNAP is removed so we can use the APT version
 snap remove thonny || true
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
 
@@ -373,7 +374,13 @@ dconf update
 # This only runs for visual changes (Icons/Theme) that depend on WHO logged in.
 
 echo ">>> Generating Conditional UI Script..."
+
+# --- APP DETECTION ---
+# Detect Code path (Snap)
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
+# Detect Firefox path (Snap vs Apt)
+if [ -f "/var/lib/snapd/desktop/applications/firefox_firefox.desktop" ]; then FIREFOX="firefox_firefox.desktop"; else FIREFOX="firefox.desktop"; fi
+
 THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
@@ -408,7 +415,8 @@ else
     # === STUDENT MODE ===
     # Visuals
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
-    gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
+    # Added Firefox at start, followed by Chrome, Nautilus, Terminal, Code, Thonny
+    gsettings set org.gnome.shell favorite-apps "['$FIREFOX', 'google-chrome.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
     # Reset Restrictions (In case they were stuck from a previous exam session)
     gsettings set org.gnome.mutter overlay-key 'Super_L'
