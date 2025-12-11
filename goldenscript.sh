@@ -340,7 +340,10 @@ if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit
 
 # === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
 
-# 1. FORCE MUTE AUDIO (Hardware & UI)
+# 1. DISABLE UPDATE NOTIFICATIONS (Moved from Root script to User script)
+gsettings set com.ubuntu.update-notifier no-show-notifications true
+
+# 2. FORCE MUTE AUDIO (Hardware & UI)
 # Hardware sink mute
 for i in {1..5}; do
     pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
@@ -349,19 +352,19 @@ done
 # UI/Gsettings mute (Visual toggle)
 gsettings set org.gnome.desktop.sound mute-output-volume true
 
-# 2. FORCE DISABLE PRINTING
+# 3. FORCE DISABLE PRINTING
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
-# --- NEW FIX: DISABLE USER SWITCHING ---
+# 4. PREVENT USER SWITCHING
 gsettings set org.gnome.desktop.lockdown disable-user-switching true
 gsettings set org.gnome.desktop.lockdown disable-log-out false
 
-# 3. CLOCK SETTINGS (Seconds & Week Numbers)
+# 5. CLOCK SETTINGS (Seconds & Week Numbers)
 gsettings set org.gnome.desktop.interface clock-show-seconds true
 gsettings set org.gnome.desktop.calendar show-weekdate true
 
-# 4. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
+# 6. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
 gsettings set org.gnome.desktop.interface enable-hot-corners true
 gsettings set org.gnome.mutter edge-tiling true
 
@@ -558,14 +561,14 @@ chmod 644 /etc/cron.d/school_shutdown_schedule
 # 10. FINAL POLISH
 echo ">>> Applying final polish..."
 
-# A. Disable Software Update Notifications
+# A. Disable Software Update Notifications (System Level)
 cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
 APT::Periodic::AutocleanInterval "0";
 APT::Periodic::Unattended-Upgrade "0";
 EOF
-gsettings set com.ubuntu.update-notifier no-show-notifications true || true
+# Note: The 'gsettings' command for notifications has been moved to force_ui.sh
 
 # B. Configure Epoptes Server
 EPOPTES_FILE="/etc/default/epoptes-client"
