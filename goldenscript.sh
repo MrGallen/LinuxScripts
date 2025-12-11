@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#       SCHOOL LINUX SYSTEM CONFIGURATION
+#      SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -63,7 +63,6 @@ export DEBIAN_FRONTEND=noninteractive
 
 # A. CLEANUP FIRST
 echo ">>> Purging conflicting packages..."
-# Ensure Thonny SNAP is removed so we can use the APT version
 snap remove thonny || true
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
 
@@ -267,12 +266,12 @@ if [ "\$TYPE" == "close_session" ]; then
 
     # 3. WIPE HOME DIR (DELAYED & DETACHED)
     # Using systemd-run creates a background task that survives the PAM teardown.
-    # We wait 5 seconds to allow GDM/GNOME to finish writing logout files.
+    # We wait 10 seconds to allow GDM/GNOME to finish writing logout files.
     if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
         systemd-run --unit="cleanup-\${USER}-\$(date +%s)" \
                     --service-type=oneshot \
-                    /bin/bash -c "sleep 5; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
+                    /bin/bash -c "sleep 10; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
     fi
 fi
 EOF
@@ -325,7 +324,6 @@ chmod 644 /etc/systemd/system/cleanup-boot.service
 systemctl daemon-reload
 systemctl enable --now cleanup-boot.service
 
-
 # 7. UI ENFORCEMENT
 echo ">>> Generating UI Enforcer script..."
 if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then CODE="code_code.desktop"; else CODE="code.desktop"; fi
@@ -337,19 +335,19 @@ cat << EOF > /usr/local/bin/force_ui.sh
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
 # === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
+
 # 1. FORCE MUTE AUDIO (Hardware & UI)
 # Hardware sink mute
-pactl set-sink-mute @DEFAULT_SINK@ 1; pactl set-sink-volume @DEFAULT_SINK@ 0%
-
+for i in {1..5}; do
+    pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+    sleep 1
+done
 # UI/Gsettings mute (Visual toggle)
 gsettings set org.gnome.desktop.sound mute-output-volume true
 
 # 2. FORCE DISABLE PRINTING
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
-
-
-
 
 # 3. CLOCK SETTINGS (Seconds & Week Numbers)
 gsettings set org.gnome.desktop.interface clock-show-seconds true
@@ -368,9 +366,10 @@ powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
 
+gsettings set org.gnome.desktop.lockdown disable-user-switching false
+
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # === STRICT EXAM MODE ===
-
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
     
@@ -380,7 +379,6 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # 2. DISABLE "SUPER" KEY
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
-
     
     # 3. HIDE "SHOW APPLICATIONS"
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
@@ -389,10 +387,9 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
 
     # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
-    # Disable Terminal switching shortcuts for restricted users
-    gsettings set org.gnome.mutter.wayland.keybindings restore-shortcuts "[]"
 else
     # === STUDENT/GENERIC MODE ===
+    
     # Reset Super Key & App Grid
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
@@ -415,11 +412,9 @@ for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensi
     gsettings set \$schema dash-max-icon-size 54
     gsettings set \$schema dock-fixed false
 done
-
 gsettings set org.gnome.shell welcome-dialog-last-shown-version '999999'
 EOF
 chmod +x /usr/local/bin/force_ui.sh
-
 
 cat << EOF > /etc/xdg/autostart/force_ui.desktop
 [Desktop Entry]
@@ -431,8 +426,6 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
 
-
-
 # 8. MISC FIXES
 echo ">>> Applying final fixes..."
 
@@ -443,26 +436,6 @@ net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
-
-# B. Disable Fast User Switching (Hardened)
-echo ">>> Disabling Fast User Switching..."
-mkdir -p /etc/dconf/profile
-mkdir -p /etc/dconf/db/local.d
-
-# 1. Create the profile so dconf knows to check the 'local' database
-cat << EOF > /etc/dconf/profile/user
-user-db:user
-system-db:local
-EOF
-
-# 2. Create the lockdown rule
-cat << EOF > /etc/dconf/db/local.d/00-disable-switching
-[org/gnome/desktop/lockdown]
-disable-user-switching=true
-EOF
-
-# 3. Force the system to recompile the dconf binary database
-dconf update
 
 # C. Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
