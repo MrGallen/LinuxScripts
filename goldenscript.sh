@@ -347,14 +347,25 @@ disable-print-setup=true
 disable-user-switching=true
 
 [org/gnome/desktop/interface]
-clock-show-seconds=true
-enable-hot-corners=true
+clock-show-seconds=false
+enable-hot-corners=false
 
 [org/gnome/desktop/calendar]
-show-weekdate=true
+show-weekdate=false
 
 [org/gnome/mutter]
-edge-tiling=true
+edge-tiling=false
+
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-timeout=0
+sleep-inactive-ac-type='nothing'
+
+[org/gnome/desktop/screensaver]
+lock-enabled=false
+idle-activation-enabled=false
 EOF
 
 # 3. LOCK these settings so students cannot change them
@@ -363,7 +374,14 @@ cat << EOF > /etc/dconf/db/local.d/locks/school-locks
 /org/gnome/desktop/lockdown/disable-printing
 /org/gnome/desktop/lockdown/disable-print-setup
 /org/gnome/desktop/interface/clock-show-seconds
+/org/gnome/desktop/interface/enable-hot-corners
+/org/gnome/desktop/calendar/show-weekdate
+/org/gnome/mutter/edge-tiling
 /org/gnome/desktop/lockdown/disable-user-switching
+/org/gnome/desktop/session/idle-delay
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type
+/org/gnome/desktop/screensaver/lock-enabled
+/org/gnome/desktop/screensaver/idle-activation-enabled
 EOF
 
 # 4. Update the binary database
