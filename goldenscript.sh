@@ -17,7 +17,6 @@ WIFI_SSID="Admin"
 WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
-# Space-separated list of accounts.
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
@@ -38,14 +37,10 @@ echo ">>> Starting Final System Setup..."
 
 # 1.5 CONNECT TO WI-FI (Aggressive Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
-# 1. Turn radio ON
 nmcli radio wifi on
-# 2. Delete any old/corrupt profile with this name
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
-# 3. Rescan to find the network
 nmcli device wifi rescan || true
 sleep 3
-# 4. Connect
 nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
@@ -175,19 +170,11 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps)
     iptables -I OUTPUT 1 -o lo -j ACCEPT
-    
-    # 2. ALLOW Local Network (Epoptes needs this!)
-    # Assuming school uses standard 192.168.x.x or 10.x.x.x
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
-
-    # 3. BLOCK Everything Else for this User
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
-    
-    # 4. BLOCK IPv6 as well (To be safe)
     ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
@@ -298,18 +285,28 @@ cat << EOF > /usr/local/bin/force_ui.sh
 # Exit early if Admin
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS (Student, Exam, Mock, Generic a@sec) ===
+# === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
 
-# 1. FORCE MUTE AUDIO (Try multiple times to ensure PulseAudio catches it)
-# This loops for 5 seconds to ensure the sound system is ready before muting
+# 1. FORCE MUTE AUDIO (Hardware & UI)
+# Hardware sink mute
 for i in {1..5}; do
     pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
     sleep 1
 done
+# UI/Gsettings mute (Visual toggle)
+gsettings set org.gnome.desktop.sound mute-output-volume true
 
 # 2. FORCE DISABLE PRINTING
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
+
+# 3. CLOCK SETTINGS (Seconds & Week Numbers)
+gsettings set org.gnome.desktop.interface clock-show-seconds true
+gsettings set org.gnome.desktop.calendar show-weekdate true
+
+# 4. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
+gsettings set org.gnome.desktop.interface enable-hot-corners true
+gsettings set org.gnome.mutter edge-tiling true
 
 # === SPECIFIC MODES ===
 RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
@@ -340,7 +337,7 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STUDENT/GENERIC MODE (Applies to student@, a@sec, b@sec, etc.) ===
+    # === STUDENT/GENERIC MODE ===
     
     # Reset Super Key & App Grid
     gsettings set org.gnome.mutter overlay-key 'Super_L'
@@ -356,6 +353,7 @@ else
     done
 fi
 
+# Dock Position and Styling
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
