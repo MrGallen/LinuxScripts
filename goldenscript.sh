@@ -266,12 +266,12 @@ if [ "\$TYPE" == "close_session" ]; then
 
     # 3. WIPE HOME DIR (DELAYED & DETACHED)
     # Using systemd-run creates a background task that survives the PAM teardown.
-    # We wait 10 seconds to allow GDM/GNOME to finish writing logout files.
+    # We wait 5 seconds to allow GDM/GNOME to finish writing logout files.
     if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
         systemd-run --unit="cleanup-\${USER}-\$(date +%s)" \
                     --service-type=oneshot \
-                    /bin/bash -c "sleep 10; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
+                    /bin/bash -c "sleep 5; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
     fi
 fi
 EOF
