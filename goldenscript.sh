@@ -130,11 +130,6 @@ wipe_immediate() {
         # 3. Remove directory
         rm -rf "/home/\$TARGET_USER"
         
-        # 4. Recreate with STRICT PRIVACY (700 = Only owner can access)
-        mkdir -p "/home/\$TARGET_USER"
-        chmod 700 "/home/\$TARGET_USER"
-        chown "\$TARGET_USER":"\$TARGET_USER" "/home/\$TARGET_USER"
-        
         logger "CLEANUP: Immediate wipe for \$TARGET_USER completed (Secure Mode)."
     fi
 }
