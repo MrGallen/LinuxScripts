@@ -1,8 +1,9 @@
+
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#      SCHOOL LINUX SYSTEM CONFIGURATION
+#     SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -17,6 +18,7 @@ WIFI_SSID="Admin"
 WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 3. GROUPS & SERVER
+# Space-separated list of accounts.
 MOCK_GROUP="mock@SEC.local lccs@SEC.local lccs1@SEC.local" 
 EXAM_USER="exam@SEC.local"
 TEST_USER="exam1@SEC.local"
@@ -35,27 +37,17 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
-# 1.5 CONNECT TO WI-FI (System-Wide Mode)
+# 1.5 CONNECT TO WI-FI (Aggressive Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
+# 1. Turn radio ON
 nmcli radio wifi on
-
-# Delete existing connection if it exists to avoid duplicates
+# 2. Delete any old/corrupt profile with this name
 nmcli connection delete "$WIFI_SSID" > /dev/null 2>&1 || true
+# 3. Rescan to find the network
 nmcli device wifi rescan || true
 sleep 3
-
-# Connect explicitly naming the connection "$WIFI_SSID"
-if nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" name "$WIFI_SSID"; then
-    echo ">>> Wi-Fi Connected. Applying system-wide permissions..."
-    # 1. Set permissions to empty (Shared with all users)
-    nmcli connection modify "$WIFI_SSID" connection.permissions ""
-    # 2. Store password in system config (not keyring)
-    nmcli connection modify "$WIFI_SSID" wifi-sec.psk-flags 0
-    # 3. Ensure autoconnect
-    nmcli connection modify "$WIFI_SSID" connection.autoconnect yes
-else
-    echo ">>> ERROR: Wi-Fi connection failed. The permission fix was skipped."
-fi
+# 4. Connect
+nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" || echo ">>> Warning: Wi-Fi connection failed. Check signal/range."
 
 # 2. UPDATES & PACKAGE MANAGEMENT
 echo ">>> Preparing system..."
@@ -66,17 +58,11 @@ echo ">>> Purging conflicting packages..."
 snap remove thonny || true
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
 
-# B. ENABLE UNIVERSE REPO (Crucial for Thonny/PyGame in 24.04)
-echo ">>> Enabling Universe Repository..."
-apt-get update -q
-apt-get install -y software-properties-common
-add-apt-repository universe -y
-apt-get update -q
-
-# C. INSTALL SYSTEM LIBRARIES & APPS
+# B. INSTALL SYSTEM LIBRARIES & APPS
 echo ">>> Installing System & Python Libraries..."
-# We try to install Thonny via APT, but if it fails, we will grab it via PIP later
+apt-get update -q 
 apt-get install -y -q \
+    thonny \
     gnome-terminal \
     python3-pip \
     python3-tk \
@@ -84,14 +70,16 @@ apt-get install -y -q \
     python3-matplotlib \
     python3-pandas \
     python3-pygal \
-    python3-pygame \
-    thonny || echo ">>> WARNING: Thonny APT install failed. Will try PIP."
+    python3-pygame
 
-# D. INSTALL CUSTOM PIP LIBRARIES (With Thonny Fallback)
+# C. INSTALL CUSTOM PIP LIBRARIES
 echo ">>> Installing Custom PyPI Libraries..."
-# We force install thonny here just in case APT failed or gave an old version
-pip3 install firebase compscifirebase thonny --break-system-packages
+pip3 install firebase compscifirebase --break-system-packages
 
+# D. SYSTEM UPGRADE
+echo ">>> Upgrading System..."
+apt-get upgrade -y -q
+apt-get autoremove -y -q
 
 # E. INSTALL SNAPS
 echo ">>> Installing Snaps..."
@@ -104,23 +92,6 @@ echo ">>> Downloading Exam Resources..."
 mkdir -p /opt/sec_exam_resources
 wget -q -O /opt/sec_exam_resources/Python_Reference.pdf "$PDF_URL" || echo "Warning: PDF Download failed. Check URL."
 chmod 644 /opt/sec_exam_resources/Python_Reference.pdf
-
-# 2c. PRIVACY LOCKDOWN
-echo ">>> Locking down User Privacy..."
-
-# 1. Configure default permission for NEW users (UMASK 077 = 700 permissions)
-sed -i 's/^UMASK.*/UMASK 077/g' /etc/login.defs
-sed -i 's/^#*DIR_MODE.*/DIR_MODE=0700/g' /etc/adduser.conf
-
-# 2. Configure PAM to use strict umask if it creates home dirs
-if grep -q "pam_mkhomedir.so" /etc/pam.d/common-session; then
-    sed -i 's/pam_mkhomedir.so.*/pam_mkhomedir.so skel=\/etc\/skel\/ umask=0077/' /etc/pam.d/common-session
-fi
-
-# 3. Force permission fix on ALL CURRENT existing home directories
-# This ensures student A cannot see student B's files right now.
-echo ">>> Applying strict permissions to existing home folders..."
-chmod 700 /home/*
 
 # 3. UNIVERSAL CLEANUP LOGIC
 cat << EOF > /usr/local/bin/universal_cleanup.sh
@@ -137,18 +108,10 @@ clean_chrome() {
 
 wipe_immediate() {
     if [ -d "/home/\$TARGET_USER" ]; then
-        # 1. Kill processes gently then forcefully
-        pkill -u "\$TARGET_USER" --signal 15 || true
+        pkill -u "\$TARGET_USER" || true
         sleep 1
-        pkill -u "\$TARGET_USER" --signal 9 || true
-        
-        # 2. Wait for locks to release
-        sleep 2
-        
-        # 3. Remove directory
         rm -rf "/home/\$TARGET_USER"
-        
-        logger "CLEANUP: Immediate wipe for \$TARGET_USER completed (Secure Mode)."
+        logger "CLEANUP: Immediate wipe for \$TARGET_USER"
     fi
 }
 
@@ -175,7 +138,6 @@ for user in $MOCK_GROUP $EXAM_USER; do
 done
 chmod +x /etc/cron.daily/sec_cleanup
 
-
 # 4. PAM MASTER CONTROLLER
 echo ">>> Configuring PAM hooks..."
 
@@ -191,8 +153,7 @@ cat << EOF > /usr/local/etc/chrome_policies/student_policy.json
   "DefaultBrowserSettingEnabled": false,
   "MetricsReportingEnabled": false,
   "SyncDisabled": true,
-  "PasswordManagerEnabled": false,
-  "PrintingEnabled": false
+  "PasswordManagerEnabled": false
 }
 EOF
 
@@ -214,17 +175,29 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
+    # 1. ALLOW Loopback (Internal Apps)
     iptables -I OUTPUT 1 -o lo -j ACCEPT
+    
+    # 2. ALLOW Local Network (Epoptes needs this!)
+    # Assuming school uses standard 192.168.x.x or 10.x.x.x
+    # If uncertain, we allow all private ranges.
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
+
+    # 3. BLOCK Everything Else for this User
+    # We use -I (Insert) to make sure this is at the TOP of the list
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
+    
+    # 4. BLOCK IPv6 as well (To be safe)
     ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
+    # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
+    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -259,23 +232,15 @@ fi
 
 # --- LOGOUT LOGIC ---
 if [ "\$TYPE" == "close_session" ]; then
-    
-    # 1. Clean Chrome locks immediately (low risk)
     /usr/local/bin/universal_cleanup.sh "\$USER" chrome
 
-    # 2. Unblock internet
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         unblock_internet
     fi
 
-    # 3. WIPE HOME DIR (DELAYED & DETACHED)
-    # Using systemd-run creates a background task that survives the PAM teardown.
-    # We wait 10 seconds to allow GDM/GNOME to finish writing logout files.
     if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
-        systemd-run --unit="cleanup-\${USER}-\$(date +%s)" \
-                    --service-type=oneshot \
-                    /bin/bash -c "sleep 10; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
+        /usr/local/bin/universal_cleanup.sh "\$USER" wipe
     fi
 fi
 EOF
@@ -284,7 +249,6 @@ chmod +x /usr/local/bin/pam_hook.sh
 if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
-
 
 # 5. INACTIVE USER CLEANUP TOOL
 cat << EOF > /usr/local/bin/cleanup_old_users.sh
@@ -305,7 +269,7 @@ done
 EOF
 chmod 750 /usr/local/bin/cleanup_old_users.sh
 
-# 6. SYSTEMD BOOT CLEANUP
+# 6. SYSTEMD BOOT CLEANUP (SAFETY NET)
 cat << EOF > /etc/systemd/system/cleanup-boot.service
 [Unit]
 Description=Safety Cleanup (Chrome, Student, Epoptes, Inactive)
@@ -335,47 +299,16 @@ THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
-# Exit early if Admin
 if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-# === GLOBAL RESTRICTIONS FOR ALL NON-ADMINS ===
-
-# 1. DISABLE UPDATE NOTIFICATIONS (Moved from Root script to User script)
-gsettings set com.ubuntu.update-notifier no-show-notifications true
-
-# 2. FORCE MUTE AUDIO (Hardware & UI)
-# Hardware sink mute
-for i in {1..5}; do
-    pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
-    sleep 1
-done
-# UI/Gsettings mute (Visual toggle)
-gsettings set org.gnome.desktop.sound mute-output-volume true
-
-# 3. FORCE DISABLE PRINTING
-gsettings set org.gnome.desktop.lockdown disable-printing true
-gsettings set org.gnome.desktop.lockdown disable-print-setup true
-
-# 4. PREVENT USER SWITCHING
-gsettings set org.gnome.desktop.lockdown disable-user-switching true
-gsettings set org.gnome.desktop.lockdown disable-log-out false
-
-# 5. CLOCK SETTINGS (Seconds & Week Numbers)
-gsettings set org.gnome.desktop.interface clock-show-seconds true
-gsettings set org.gnome.desktop.calendar show-weekdate true
-
-# 6. MULTITASKING SETTINGS (Hot Corner & Screen Edges)
-gsettings set org.gnome.desktop.interface enable-hot-corners true
-gsettings set org.gnome.mutter edge-tiling true
-
-# === SPECIFIC MODES ===
 RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
-sleep 2
-
-# Power Settings
+sleep 3
+pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
+gsettings set org.gnome.desktop.lockdown disable-printing true
+gsettings set org.gnome.desktop.lockdown disable-print-setup true
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # === STRICT EXAM MODE ===
@@ -385,11 +318,12 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # 1. DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # 2. DISABLE "SUPER" KEY
+    # 2. DISABLE "SUPER" KEY (Prevents opening App Menu)
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
-    # 3. HIDE "SHOW APPLICATIONS"
+    # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
+    # This prevents users from clicking the button to see other apps
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
@@ -397,9 +331,8 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STUDENT/GENERIC MODE ===
-    
-    # Reset Super Key & App Grid
+    # === STUDENT MODE ===
+    # Reset Super Key & App Grid for normal students
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
     
@@ -407,13 +340,12 @@ else
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
-    # Ensure Apps Button is VISIBLE
+    # Ensure Apps Button is VISIBLE for students
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button true
     done
 fi
 
-# Dock Position and Styling
 for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
     gsettings set \$schema dock-position 'BOTTOM'
     gsettings set \$schema autohide true
@@ -435,10 +367,8 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
 
-# 8. MISC FIXES
+# 8. MISC FIXES (INCLUDES SINGLE USER ENFORCEMENT)
 echo ">>> Applying final fixes..."
-
-# A. TCP Keepalive
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_intvl = 10
@@ -446,53 +376,41 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# C. Hide VNC & Terminal Icons
+# Disable Fast User Switching (Enforces Single User)
+mkdir -p /etc/dconf/profile
+echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
+mkdir -p /etc/dconf/db/local.d
+echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
+dconf update
+
+# Hide VNC & Terminal Icons
 APPS=("x11vnc.desktop" "xtigervncviewer.desktop" "debian-xterm.desktop" "debian-uxterm.desktop")
 for app in "${APPS[@]}"; do
     FILE="/usr/share/applications/$app"
     [ -f "$FILE" ] && echo "NoDisplay=true" >> "$FILE"
 done
 
-# D. Microbit Rules
+# Microbit Rules
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"' > "/etc/udev/rules.d/99-microbit.rules"
 udevadm control --reload
 
-# E. FILE ASSOCIATIONS (Fixed)
-# 1. Identify Apps
-if [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then
-    CODE_APP="code_code.desktop"
-else
-    CODE_APP="code.desktop"
+# File Associations & DEFAULT BROWSER FIX
+MIME="/usr/share/applications/mimeapps.list"
+if [ -f "$MIME" ]; then
+    grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
+    sed -i '/text\/csv/d' "$MIME"
+    sed -i '/text\/plain/d' "$MIME"
+    sed -i '/text\/html/d' "$MIME"
+    sed -i '/x-scheme-handler\/http/d' "$MIME"
+    sed -i '/x-scheme-handler\/https/d' "$MIME"
+    
+    sed -i '/\[Default Applications\]/a text/csv=code_code.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a text/plain=code_code.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a x-scheme-handler/http=google-chrome.desktop' "$MIME"
+    sed -i '/\[Default Applications\]/a x-scheme-handler/https=google-chrome.desktop' "$MIME"
 fi
-THONNY_APP="org.thonny.Thonny.desktop"
 
-# 2. Target XDG System Config
-MIME="/etc/xdg/mimeapps.list"
-mkdir -p /etc/xdg
-touch "$MIME"
-
-# Ensure Header
-grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
-
-# Clean old entries
-sed -i '/text\/csv/d' "$MIME"
-sed -i '/text\/plain/d' "$MIME"
-sed -i '/text\/html/d' "$MIME"
-sed -i '/x-scheme-handler\/http/d' "$MIME"
-sed -i '/x-scheme-handler\/https/d' "$MIME"
-sed -i '/text\/x-python/d' "$MIME"
-sed -i '/application\/x-python-code/d' "$MIME"
-
-# Inject Defaults
-cat << EOF >> "$MIME"
-text/csv=$CODE_APP
-text/plain=$CODE_APP
-text/x-python=$THONNY_APP
-application/x-python-code=$THONNY_APP
-text/html=google-chrome.desktop
-x-scheme-handler/http=google-chrome.desktop
-x-scheme-handler/https=google-chrome.desktop
-EOF
 # 9. SCHEDULED MAINTENANCE & SMART SHUTDOWN
 echo ">>> Scheduling Smart Shutdown & Maintenance..."
 
@@ -561,16 +479,16 @@ chmod 644 /etc/cron.d/school_shutdown_schedule
 # 10. FINAL POLISH
 echo ">>> Applying final polish..."
 
-# A. Disable Software Update Notifications (System Level)
+# A. Disable Software Update Notifications
 cat << EOF > /etc/apt/apt.conf.d/99-disable-periodic-update
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
 APT::Periodic::AutocleanInterval "0";
 APT::Periodic::Unattended-Upgrade "0";
 EOF
-# Note: The 'gsettings' command for notifications has been moved to force_ui.sh
+gsettings set com.ubuntu.update-notifier no-show-notifications true || true
 
-# B. Configure Epoptes Server
+# B. Configure Epoptes Server (Check first)
 EPOPTES_FILE="/etc/default/epoptes-client"
 
 if [ -f "$EPOPTES_FILE" ]; then
@@ -588,7 +506,7 @@ fi
 # C. Set Timezone
 timedatectl set-timezone Europe/Dublin
 
-# D. SELF DESTRUCT
+# D. SELF DESTRUCT (Security)
 echo ">>> CONFIGURATION COMPLETE."
 echo ">>> Deleting this script file to protect Wi-Fi passwords..."
 rm -- "$0"
