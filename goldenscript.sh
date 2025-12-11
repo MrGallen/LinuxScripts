@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with a non-zero status
 
 # ==========================================
-#     SCHOOL LINUX SYSTEM CONFIGURATION
+#      SCHOOL LINUX SYSTEM CONFIGURATION
 #          (Ubuntu 24.04 LTS)
 # ==========================================
 
@@ -178,14 +178,11 @@ block_internet() {
     iptables -I OUTPUT 1 -o lo -j ACCEPT
     
     # 2. ALLOW Local Network (Epoptes needs this!)
-    # Assuming school uses standard 192.168.x.x or 10.x.x.x
-    # If uncertain, we allow all private ranges.
     iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
     iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
     iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
 
     # 3. BLOCK Everything Else for this User
-    # We use -I (Insert) to make sure this is at the TOP of the list
     iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
     
     # 4. BLOCK IPv6 as well (To be safe)
@@ -196,7 +193,6 @@ unblock_internet() {
     # Clean up the rules by User Owner match
     iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
     ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    # Note: We leave the ALLOW rules as they are harmless generic allows
 }
 
 setup_exam_files() {
@@ -298,40 +294,51 @@ THONNY="org.thonny.Thonny.desktop"
 
 cat << EOF > /usr/local/bin/force_ui.sh
 #!/bin/bash
-if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then exit 0; fi
 
-RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
+# --- EXEMPT ADMINS ---
+# If it is an admin, exit script (do not apply restrictions)
+if [ "\$USER" == "$ADMIN_USER_1" ] || [ "\$USER" == "$ADMIN_USER_2" ]; then
+    exit 0
+fi
+
+# --- APPLY TO ALL NON-ADMINS (Student, Exam, Mock, a@, b@, etc) ---
 sleep 3
+
+# 1. MUTE AUDIO ON SIGN IN
 pactl set-sink-mute @DEFAULT_SINK@ 1 > /dev/null 2>&1 || true
+
+# 2. GENERAL LOCKDOWNS
 powerprofilesctl set performance || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false
 gsettings set org.gnome.desktop.session idle-delay 0
 gsettings set org.gnome.desktop.lockdown disable-printing true
 gsettings set org.gnome.desktop.lockdown disable-print-setup true
+gsettings set org.gnome.desktop.lockdown disable-user-switching true
+
+# 3. DETERMINE MODE
+RESTRICTED_USERS="$MOCK_GROUP $EXAM_USER $TEST_USER"
 
 if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
     # === STRICT EXAM MODE ===
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru'
     
-    # 1. DOCK: ONLY THONNY
+    # DOCK: ONLY THONNY
     gsettings set org.gnome.shell favorite-apps "['$THONNY']"
     
-    # 2. DISABLE "SUPER" KEY (Prevents opening App Menu)
+    # DISABLE "SUPER" KEY & APP GRID
     gsettings set org.gnome.mutter overlay-key ''
     gsettings set org.gnome.shell.keybindings toggle-overview "[]"
     
-    # 3. HIDE "SHOW APPLICATIONS" GRID BUTTON (9 Dots)
-    # This prevents users from clicking the button to see other apps
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button false
     done
 
-    # 4. DISABLE RUN COMMAND
+    # DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
 else
-    # === STUDENT MODE ===
-    # Reset Super Key & App Grid for normal students
+    # === STANDARD STUDENT/OTHER MODE (e.g. a@sec.local) ===
+    # Reset Super Key & App Grid
     gsettings set org.gnome.mutter overlay-key 'Super_L'
     gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>s']"
     
@@ -339,7 +346,7 @@ else
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
     
-    # Ensure Apps Button is VISIBLE for students
+    # Ensure Apps Button is VISIBLE
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
         gsettings set \$schema show-show-apps-button true
     done
@@ -366,6 +373,37 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
 
+# 7.5 POLICYKIT RESTRICTIONS (WI-FI, NETWORK, PRINTERS, COLOR)
+echo ">>> Applying Admin-Only restrictions (Polkit)..."
+mkdir -p /etc/polkit-1/rules.d/
+
+cat << EOF > /etc/polkit-1/rules.d/99-school-restrictions.rules
+/* * RESTRICT: Wi-Fi, Network, Printers, Color Management, Software Install
+ * ACTION: Require Admin Password (auth_admin) for ANY of these actions.
+ */
+polkit.addRule(function(action, subject) {
+    // 1. NETWORK & WI-FI (NetworkManager)
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+    // 2. PRINTERS (CUPS / SCP-DBUS)
+    if (action.id.indexOf("org.opensuse.cupspkhelper.mechanism.") === 0 ||
+        action.id.indexOf("com.redhat.printer-drivers-installer") === 0 ||
+        action.id.indexOf("org.debian.apt.install-or-remove-packages") === 0) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+    // 3. COLOR MANAGEMENT (Colord)
+    if (action.id.indexOf("org.freedesktop.color-manager.") === 0) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+    // 4. DISPLAY / SYSTEM SETTINGS (Generic guards)
+    if (action.id.indexOf("org.freedesktop.hostname1.") === 0 ||
+        action.id.indexOf("org.freedesktop.timedate1.") === 0) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+});
+EOF
+
 # 8. MISC FIXES (INCLUDES SINGLE USER ENFORCEMENT)
 echo ">>> Applying final fixes..."
 cat << EOF > /etc/sysctl.d/99-lab-keepalive.conf
@@ -375,11 +413,16 @@ net.ipv4.tcp_keepalive_probes = 3
 EOF
 sysctl --system
 
-# Disable Fast User Switching (Enforces Single User)
+# Disable Fast User Switching & PRINTERS (DCONF)
 mkdir -p /etc/dconf/profile
 echo -e "user-db:user\nsystem-db:local" > /etc/dconf/profile/user
 mkdir -p /etc/dconf/db/local.d
-echo -e "[org/gnome/desktop/lockdown]\ndisable-user-switching=true" > /etc/dconf/db/local.d/00-disable-switching
+cat << EOF > /etc/dconf/db/local.d/00-school-locks
+[org/gnome/desktop/lockdown]
+disable-user-switching=true
+disable-printing=true
+disable-print-setup=true
+EOF
 dconf update
 
 # Hide VNC & Terminal Icons
