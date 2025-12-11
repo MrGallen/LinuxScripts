@@ -87,6 +87,23 @@ mkdir -p /opt/sec_exam_resources
 wget -q -O /opt/sec_exam_resources/Python_Reference.pdf "$PDF_URL" || echo "Warning: PDF Download failed. Check URL."
 chmod 644 /opt/sec_exam_resources/Python_Reference.pdf
 
+# 2c. PRIVACY LOCKDOWN
+echo ">>> Locking down User Privacy..."
+
+# 1. Configure default permission for NEW users (UMASK 077 = 700 permissions)
+sed -i 's/^UMASK.*/UMASK 077/g' /etc/login.defs
+sed -i 's/^#*DIR_MODE.*/DIR_MODE=0700/g' /etc/adduser.conf
+
+# 2. Configure PAM to use strict umask if it creates home dirs
+if grep -q "pam_mkhomedir.so" /etc/pam.d/common-session; then
+    sed -i 's/pam_mkhomedir.so.*/pam_mkhomedir.so skel=\/etc\/skel\/ umask=0077/' /etc/pam.d/common-session
+fi
+
+# 3. Force permission fix on ALL CURRENT existing home directories
+# This ensures student A cannot see student B's files right now.
+echo ">>> Applying strict permissions to existing home folders..."
+chmod 700 /home/*
+
 # 3. UNIVERSAL CLEANUP LOGIC
 cat << EOF > /usr/local/bin/universal_cleanup.sh
 #!/bin/bash
@@ -102,10 +119,23 @@ clean_chrome() {
 
 wipe_immediate() {
     if [ -d "/home/\$TARGET_USER" ]; then
-        pkill -u "\$TARGET_USER" || true
+        # 1. Kill processes gently then forcefully
+        pkill -u "\$TARGET_USER" --signal 15 || true
         sleep 1
+        pkill -u "\$TARGET_USER" --signal 9 || true
+        
+        # 2. Wait for locks to release
+        sleep 2
+        
+        # 3. Remove directory
         rm -rf "/home/\$TARGET_USER"
-        logger "CLEANUP: Immediate wipe for \$TARGET_USER"
+        
+        # 4. Recreate with STRICT PRIVACY (700 = Only owner can access)
+        mkdir -p "/home/\$TARGET_USER"
+        chmod 700 "/home/\$TARGET_USER"
+        chown "\$TARGET_USER":"\$TARGET_USER" "/home/\$TARGET_USER"
+        
+        logger "CLEANUP: Immediate wipe for \$TARGET_USER completed (Secure Mode)."
     fi
 }
 
@@ -131,6 +161,7 @@ for user in $MOCK_GROUP $EXAM_USER; do
     echo "/usr/local/bin/universal_cleanup.sh $user check_7day" >> /etc/cron.daily/sec_cleanup
 done
 chmod +x /etc/cron.daily/sec_cleanup
+
 
 # 4. PAM MASTER CONTROLLER
 echo ">>> Configuring PAM hooks..."
@@ -215,15 +246,23 @@ fi
 
 # --- LOGOUT LOGIC ---
 if [ "\$TYPE" == "close_session" ]; then
+    
+    # 1. Clean Chrome locks immediately (low risk)
     /usr/local/bin/universal_cleanup.sh "\$USER" chrome
 
+    # 2. Unblock internet
     if [[ " \$NO_NET_USERS " =~ " \$USER " ]]; then
         unblock_internet
     fi
 
+    # 3. WIPE HOME DIR (DELAYED & DETACHED)
+    # Using systemd-run creates a background task that survives the PAM teardown.
+    # We wait 3 seconds to allow GDM/GNOME to finish writing logout files.
     if [ "\$USER" == "\$STUDENT" ] || [ "\$USER" == "\$TEST" ]; then
         rm -f "\$POLICY_DEST"
-        /usr/local/bin/universal_cleanup.sh "\$USER" wipe
+        systemd-run --unit="cleanup-\${USER}-\$(date +%s)" \
+                    --service-type=oneshot \
+                    /bin/bash -c "sleep 3; /usr/local/bin/universal_cleanup.sh '\$USER' wipe"
     fi
 fi
 EOF
@@ -232,6 +271,7 @@ chmod +x /usr/local/bin/pam_hook.sh
 if ! grep -q "pam_hook.sh" /etc/pam.d/common-session; then
     echo "session optional pam_exec.so /usr/local/bin/pam_hook.sh" >> /etc/pam.d/common-session
 fi
+
 
 # 5. INACTIVE USER CLEANUP TOOL
 cat << EOF > /usr/local/bin/cleanup_old_users.sh
