@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# WI-FI SETTINGS
+WIFI_SSID="Admin"
+WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
+
 # 1. ROOT CHECK
 if [ "$(id -u)" -ne 0 ]; then
   echo ">>> Error: Must run as root."
@@ -8,10 +12,6 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo ">>> Starting Final System Setup..."
-
-# WI-FI SETTINGS
-WIFI_SSID="Admin"
-WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
 
 # 1.5 CONNECT TO WI-FI (System-Wide Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
