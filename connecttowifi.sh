@@ -9,6 +9,10 @@ fi
 
 echo ">>> Starting Final System Setup..."
 
+# WI-FI SETTINGS
+WIFI_SSID="Admin"
+WIFI_PASS="bhd56x9064bdaz697fyc21ggh"
+
 # 1.5 CONNECT TO WI-FI (System-Wide Mode)
 echo ">>> Connecting to Wi-Fi ($WIFI_SSID)..."
 nmcli radio wifi on
