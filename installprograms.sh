@@ -44,3 +44,9 @@ echo ">>> Installing Snaps..."
 snap install --classic code || true
 rm -f /usr/share/applications/code.desktop
 rm -f /usr/share/applications/vscode.desktop
+
+# D. SELF DESTRUCT
+echo ">>> CONFIGURATION COMPLETE."
+echo ">>> Deleting this script file to protect Wi-Fi passwords..."
+rm -- "$0"
+echo ">>> Script deleted. Please Reboot."
