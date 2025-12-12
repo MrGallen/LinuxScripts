@@ -175,22 +175,25 @@ PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
 # --- FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps)
+    # 1. ALLOW Loopback (Internal Apps) - Insert at top
     iptables -I OUTPUT 1 -o lo -j ACCEPT
     
-    # 2. ALLOW Local Network (Epoptes needs this!)
-    # Assuming school uses standard 192.168.x.x or 10.x.x.x
-    # If uncertain, we allow all private ranges.
-    iptables -I OUTPUT 2 -d 192.168.0.0/16 -j ACCEPT
-    iptables -I OUTPUT 3 -d 10.0.0.0/8 -j ACCEPT
-    iptables -I OUTPUT 4 -d 172.16.0.0/12 -j ACCEPT
-
-    # 3. BLOCK Everything Else for this User
-    # We use -I (Insert) to make sure this is at the TOP of the list
-    iptables -I OUTPUT 5 -m owner --uid-owner "\$USER" -j REJECT
+    # 2. ALLOW Local Network (Epoptes) - Insert at top (pushes loopback to #2)
+    # We use -I OUTPUT 1 repeatedly so they stack in reverse order of execution
+    iptables -I OUTPUT 1 -d 172.16.0.0/12 -j ACCEPT
+    iptables -I OUTPUT 1 -d 10.0.0.0/8 -j ACCEPT
+    iptables -I OUTPUT 1 -d 192.168.0.0/16 -j ACCEPT
     
-    # 4. BLOCK IPv6 as well (To be safe)
-    ip6tables -I OUTPUT 1 -m owner --uid-owner "\$USER" -j REJECT
+    # 3. BLOCK Everything Else for this User
+    # We append this (-A) to the OUTPUT chain but specifically for this user?
+    # Actually, safer to INSERT it just after the allows.
+    # But since we just inserted 4 allow rules at the top,
+    # Any traffic NOT matching those local IPs will hit this next rule:
+    
+    iptables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
+    
+    # 4. BLOCK IPv6 as well
+    ip6tables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
 }
 
 unblock_internet() {
