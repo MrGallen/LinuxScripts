@@ -57,6 +57,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo ">>> Purging conflicting packages..."
 snap remove thonny || true
 apt-get purge -y "gnome-initial-setup" "gnome-tour" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" || true
+rm -f /home/*/.local/share/applications/*mmfbcljfglokjkanfeinibellchtcxn*
 
 # B. INSTALL SYSTEM LIBRARIES & APPS
 echo ">>> Installing System & Python Libraries..."
