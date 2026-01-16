@@ -74,7 +74,7 @@ apt-get install -y -q \
 
 # C. INSTALL CUSTOM PIP LIBRARIES
 echo ">>> Installing Custom PyPI Libraries..."
-pip3 install firebase compscifirebase --break-system-packages
+pip3 install firebase compscifirebase mb_detect --break-system-packages
 
 # D. SYSTEM UPGRADE
 echo ">>> Upgrading System..."
