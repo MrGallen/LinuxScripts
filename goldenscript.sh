@@ -335,6 +335,9 @@ if [[ " \$RESTRICTED_USERS " =~ " \$USER " ]]; then
 
     # 4. DISABLE RUN COMMAND
     gsettings set org.gnome.desktop.lockdown disable-command-line true
+    gsettings set org.gnome.shell enable-hot-corners false
+    gsettings set org.gnome.mutter edge-tiling true
+    
 else
     # === STUDENT MODE ===
     # Reset Super Key & App Grid for normal students
@@ -344,6 +347,8 @@ else
     gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple'
     gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple'
     gsettings set org.gnome.shell favorite-apps "['google-chrome.desktop', 'firefox_firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$CODE', '$THONNY']"
+    gsettings set org.gnome.shell enable-hot-corners true
+    gsettings set org.gnome.mutter edge-tiling true
     
     # Ensure Apps Button is VISIBLE for students
     for schema in "org.gnome.shell.extensions.dash-to-dock" "org.gnome.shell.extensions.ubuntu-dock"; do
