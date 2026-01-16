@@ -54,6 +54,8 @@ wipe_if_older_than_7_days() {
 if [ "\$ACTION" == "chrome" ]; then clean_chrome; fi
 if [ "\$ACTION" == "wipe" ]; then wipe_immediate; fi
 if [ "\$ACTION" == "check_7day" ]; then wipe_if_older_than_7_days; fi
+
+rm -f /home/*/.local/share/applications/*mmfbcljfglokjkanfeinibellchtcxn*
 EOF
 chmod +x /usr/local/bin/universal_cleanup.sh
 
