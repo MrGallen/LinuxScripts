@@ -406,6 +406,21 @@ udevadm control --reload
 
 # File Associations & DEFAULT BROWSER FIX
 MIME="/usr/share/applications/mimeapps.list"
+
+# Check which VS Code desktop file exists
+if [ -f "/usr/share/applications/code_code.desktop" ]; then
+    MY_CODE="code_code.desktop"
+elif [ -f "/usr/share/applications/code.desktop" ]; then
+    MY_CODE="code.desktop"
+elif [ -f "/var/lib/snapd/desktop/applications/code_code.desktop" ]; then
+    MY_CODE="code_code.desktop"
+else
+    MY_CODE="gedit.desktop" # Fallback if VS Code is missing
+fi
+
+sed -i '/\[Default Applications\]/a text/csv='"$MY_CODE" "$MIME"
+sed -i '/\[Default Applications\]/a text/plain='"$MY_CODE" "$MIME"
+sed -i '/\[Default Applications\]/a text/html=google-chrome.desktop' "$MIME"
 if [ -f "$MIME" ]; then
     grep -q "\[Default Applications\]" "$MIME" || echo "[Default Applications]" >> "$MIME"
     sed -i '/text\/csv/d' "$MIME"
