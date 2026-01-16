@@ -470,7 +470,7 @@ systemd-inhibit --what=sleep --mode=block --why="Installing Updates" bash -c '
     
     # Update Apt
     apt-get update -q
-    apt-get upgrade -y -q
+    apt-get upgrade -y -q -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
     apt-get autoremove -y -q
     apt-get clean -q
     
