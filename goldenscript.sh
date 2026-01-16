@@ -173,34 +173,36 @@ POLICY_SOURCE="/usr/local/etc/chrome_policies/student_policy.json"
 POLICY_DEST="\$CHROME_MANAGED/student_policy.json"
 PDF_SOURCE="/opt/sec_exam_resources/Python_Reference.pdf"
 
-# --- FUNCTIONS ---
+# --- CORRECTED FUNCTIONS ---
 block_internet() {
-    # 1. ALLOW Loopback (Internal Apps) - Insert at top
-    iptables -I OUTPUT 1 -o lo -j ACCEPT
+    # We tag the ALLOW rules with the User ID too, so we can delete them later.
     
-    # 2. ALLOW Local Network (Epoptes) - Insert at top (pushes loopback to #2)
-    # We use -I OUTPUT 1 repeatedly so they stack in reverse order of execution
-    iptables -I OUTPUT 1 -d 172.16.0.0/12 -j ACCEPT
-    iptables -I OUTPUT 1 -d 10.0.0.0/8 -j ACCEPT
-    iptables -I OUTPUT 1 -d 192.168.0.0/16 -j ACCEPT
+    # 1. ALLOW Loopback (Internal Apps)
+    iptables -I OUTPUT 1 -o lo -m owner --uid-owner "$USER" -j ACCEPT
+    
+    # 2. ALLOW Local Network (Epoptes)
+    iptables -I OUTPUT 1 -d 172.16.0.0/12 -m owner --uid-owner "$USER" -j ACCEPT
+    iptables -I OUTPUT 1 -d 10.0.0.0/8 -m owner --uid-owner "$USER" -j ACCEPT
+    iptables -I OUTPUT 1 -d 192.168.0.0/16 -m owner --uid-owner "$USER" -j ACCEPT
     
     # 3. BLOCK Everything Else for this User
-    # We append this (-A) to the OUTPUT chain but specifically for this user?
-    # Actually, safer to INSERT it just after the allows.
-    # But since we just inserted 4 allow rules at the top,
-    # Any traffic NOT matching those local IPs will hit this next rule:
-    
-    iptables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
-    
-    # 4. BLOCK IPv6 as well
-    ip6tables -A OUTPUT -m owner --uid-owner "\$USER" -j REJECT
+    # Since we inserted the allows at the top, this append catches everything else.
+    iptables -A OUTPUT -m owner --uid-owner "$USER" -j REJECT
+    ip6tables -A OUTPUT -m owner --uid-owner "$USER" -j REJECT
 }
 
 unblock_internet() {
-    # Clean up the rules by User Owner match
-    iptables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    ip6tables -D OUTPUT -m owner --uid-owner "\$USER" -j REJECT || true
-    # Note: We leave the ALLOW rules as they are harmless generic allows
+    # CLEAN UP ALL RULES (Allow & Block) for this specific user
+    
+    # Remove the REJECT rules
+    iptables -D OUTPUT -m owner --uid-owner "$USER" -j REJECT || true
+    ip6tables -D OUTPUT -m owner --uid-owner "$USER" -j REJECT || true
+
+    # Remove the ALLOW rules (Must match the flags used in block_internet exactly)
+    iptables -D OUTPUT -o lo -m owner --uid-owner "$USER" -j ACCEPT || true
+    iptables -D OUTPUT -d 172.16.0.0/12 -m owner --uid-owner "$USER" -j ACCEPT || true
+    iptables -D OUTPUT -d 10.0.0.0/8 -m owner --uid-owner "$USER" -j ACCEPT || true
+    iptables -D OUTPUT -d 192.168.0.0/16 -m owner --uid-owner "$USER" -j ACCEPT || true
 }
 
 setup_exam_files() {
